@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2021 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -53,7 +53,7 @@
 #include <ol_txrx.h>
 #include <pktlog_ac_fmt.h>
 #include <cdp_txrx_handle.h>
-
+#include <wlan_pkt_capture_ucfg_api.h>
 #ifdef TX_CREDIT_RECLAIM_SUPPORT
 
 #define OL_TX_CREDIT_RECLAIM(pdev)					\
@@ -116,92 +116,38 @@ static inline void ol_tx_desc_update_comp_ts(struct ol_tx_desc_t *tx_desc)
 }
 #endif
 
-#if defined(QCA_LL_LEGACY_TX_FLOW_CONTROL)
-void ol_txrx_flow_control_cb(struct cdp_vdev *pvdev, bool tx_resume)
-{
-	struct ol_txrx_vdev_t *vdev = (struct ol_txrx_vdev_t *)pvdev;
-
-	qdf_spin_lock_bh(&vdev->flow_control_lock);
-	if ((vdev->osif_flow_control_cb) && (vdev->osif_fc_ctx))
-		vdev->osif_flow_control_cb(vdev->osif_fc_ctx, tx_resume);
-	qdf_spin_unlock_bh(&vdev->flow_control_lock);
-
-	return;
-}
-
-/**
- * ol_txrx_flow_control_is_pause() - is osif paused by flow control
- * @vdev: vdev handle
- *
- * Return: true if osif is paused by flow control
- */
-static bool ol_txrx_flow_control_is_pause(ol_txrx_vdev_handle vdev)
-{
-	bool is_pause = false;
-
-	if ((vdev->osif_flow_control_is_pause) && (vdev->osif_fc_ctx))
-		is_pause = vdev->osif_flow_control_is_pause(vdev->osif_fc_ctx);
-
-	return is_pause;
-}
-
-/**
- * ol_tx_flow_ct_unpause_os_q() - Unpause OS Q
- * @pdev: physical device object
- *
- *
- * Return: None
- */
-static void ol_tx_flow_ct_unpause_os_q(ol_txrx_pdev_handle pdev)
+#if defined(CONFIG_HL_SUPPORT) && defined(QCA_HL_NETDEV_FLOW_CONTROL)
+void ol_tx_flow_ct_unpause_os_q(ol_txrx_pdev_handle pdev)
 {
 	struct ol_txrx_vdev_t *vdev;
 
+	qdf_spin_lock_bh(&pdev->tx_mutex);
 	TAILQ_FOREACH(vdev, &pdev->vdev_list, vdev_list_elem) {
-		if ((qdf_atomic_read(&vdev->os_q_paused) &&
-		    (vdev->tx_fl_hwm != 0)) ||
-		    ol_txrx_flow_control_is_pause(vdev)) {
-			qdf_spin_lock(&pdev->tx_mutex);
-			if (pdev->tx_desc.num_free > vdev->tx_fl_hwm) {
-				qdf_atomic_set(&vdev->os_q_paused, 0);
-				qdf_spin_unlock(&pdev->tx_mutex);
-				ol_txrx_flow_control_cb((struct cdp_vdev *)vdev,
-						true);
-			} else {
-				qdf_spin_unlock(&pdev->tx_mutex);
-			}
+		if (vdev->tx_desc_limit == 0)
+			continue;
+
+		/* un-pause high priority queue */
+		if (vdev->prio_q_paused &&
+		    (qdf_atomic_read(&vdev->tx_desc_count)
+		     < vdev->tx_desc_limit)) {
+			pdev->pause_cb(vdev->vdev_id,
+				       WLAN_NETIF_PRIORITY_QUEUE_ON,
+				       WLAN_DATA_FLOW_CONTROL_PRIORITY);
+			vdev->prio_q_paused = 0;
 		}
-	}
-}
-#elif defined(CONFIG_HL_SUPPORT) && defined(CONFIG_PER_VDEV_TX_DESC_POOL)
-
-static void ol_tx_flow_ct_unpause_os_q(ol_txrx_pdev_handle pdev)
-{
-	struct ol_txrx_vdev_t *vdev;
-
-	TAILQ_FOREACH(vdev, &pdev->vdev_list, vdev_list_elem) {
+		/* un-pause non priority queues */
 		if (qdf_atomic_read(&vdev->os_q_paused) &&
-		    (vdev->tx_fl_hwm != 0)) {
-			qdf_spin_lock(&pdev->tx_mutex);
-			if (((ol_tx_desc_pool_size_hl(
-					vdev->pdev->ctrl_pdev) >> 1)
-					- TXRX_HL_TX_FLOW_CTRL_MGMT_RESERVED)
-					- qdf_atomic_read(&vdev->tx_desc_count)
-					> vdev->tx_fl_hwm) {
-				qdf_atomic_set(&vdev->os_q_paused, 0);
-				qdf_spin_unlock(&pdev->tx_mutex);
-				vdev->osif_flow_control_cb(vdev, true);
-			} else {
-				qdf_spin_unlock(&pdev->tx_mutex);
-			}
+		    (qdf_atomic_read(&vdev->tx_desc_count)
+		    <= vdev->queue_restart_th)) {
+			pdev->pause_cb(vdev->vdev_id,
+				       WLAN_WAKE_NON_PRIORITY_QUEUE,
+				       WLAN_DATA_FLOW_CONTROL);
+			qdf_atomic_set(&vdev->os_q_paused, 0);
 		}
 	}
+	qdf_spin_unlock_bh(&pdev->tx_mutex);
 }
-#else
-
-static inline void ol_tx_flow_ct_unpause_os_q(ol_txrx_pdev_handle pdev)
-{
-}
-#endif /* QCA_LL_LEGACY_TX_FLOW_CONTROL */
+#endif
 
 static inline uint16_t
 ol_tx_send_base(struct ol_txrx_pdev_t *pdev,
@@ -614,6 +560,151 @@ void ol_tx_flow_pool_unlock(struct ol_tx_desc_t *tx_desc)
 }
 #endif
 
+#ifdef WLAN_FEATURE_PKT_CAPTURE
+#define RESERVE_BYTES 100
+/**
+ * ol_tx_pkt_capture_tx_completion_process(): process tx packets
+ * for pkt capture mode
+ * @pdev: device handler
+ * @tx_desc: tx desc
+ * @payload: tx data header
+ * @tid:  tid number
+ * @status: Tx status
+ *
+ * Return: none
+ */
+static void
+ol_tx_pkt_capture_tx_completion_process(
+			ol_txrx_pdev_handle pdev,
+			struct ol_tx_desc_t *tx_desc,
+			struct htt_tx_data_hdr_information *payload_hdr,
+			uint8_t tid, uint8_t status)
+{
+	qdf_nbuf_t netbuf;
+	int nbuf_len;
+	struct qdf_tso_seg_elem_t *tso_seg = NULL;
+	struct ol_txrx_peer_t *peer;
+	uint8_t bssid[QDF_MAC_ADDR_SIZE];
+	uint8_t pkt_type = 0;
+
+	qdf_assert(tx_desc);
+
+	ol_tx_flow_pool_lock(tx_desc);
+	/*
+	 * In cases when vdev has gone down and tx completion
+	 * are received, leads to NULL vdev access.
+	 * So, check for NULL before dereferencing it.
+	 */
+	if (!tx_desc->vdev) {
+		ol_tx_flow_pool_unlock(tx_desc);
+		return;
+	}
+
+	ol_tx_flow_pool_unlock(tx_desc);
+
+	if (tx_desc->pkt_type == OL_TX_FRM_TSO) {
+		if (!tx_desc->tso_desc)
+			return;
+
+		tso_seg = tx_desc->tso_desc;
+		nbuf_len = tso_seg->seg.total_len;
+	} else {
+		int i, extra_frag_len = 0;
+
+		i = QDF_NBUF_CB_TX_NUM_EXTRA_FRAGS(tx_desc->netbuf);
+		if (i > 0)
+			extra_frag_len =
+			QDF_NBUF_CB_TX_EXTRA_FRAG_LEN(tx_desc->netbuf);
+		nbuf_len = qdf_nbuf_len(tx_desc->netbuf) - extra_frag_len;
+	}
+
+	qdf_spin_lock_bh(&pdev->peer_ref_mutex);
+	peer = TAILQ_FIRST(&tx_desc->vdev->peer_list);
+	qdf_spin_unlock_bh(&pdev->peer_ref_mutex);
+	if (!peer)
+		return;
+
+	qdf_spin_lock_bh(&peer->peer_info_lock);
+	qdf_mem_copy(bssid, &peer->mac_addr.raw, QDF_MAC_ADDR_SIZE);
+	qdf_spin_unlock_bh(&peer->peer_info_lock);
+
+	netbuf = qdf_nbuf_alloc(NULL,
+				roundup(nbuf_len + RESERVE_BYTES, 4),
+				RESERVE_BYTES, 4, false);
+	if (!netbuf)
+		return;
+
+	qdf_nbuf_put_tail(netbuf, nbuf_len);
+
+	if (tx_desc->pkt_type == OL_TX_FRM_TSO) {
+		uint8_t frag_cnt, num_frags = 0;
+		int frag_len = 0;
+		uint32_t tcp_seq_num;
+		uint16_t ip_len;
+
+		qdf_spin_lock_bh(&pdev->tso_seg_pool.tso_mutex);
+
+		if (tso_seg->seg.num_frags > 0)
+			num_frags = tso_seg->seg.num_frags - 1;
+
+		/*Num of frags in a tso seg cannot be less than 2 */
+		if (num_frags < 1) {
+			qdf_print("ERROR: num of frags in tso segment is %d\n",
+				  (num_frags + 1));
+			qdf_nbuf_free(netbuf);
+			qdf_spin_unlock_bh(&pdev->tso_seg_pool.tso_mutex);
+			return;
+		}
+
+		tcp_seq_num = tso_seg->seg.tso_flags.tcp_seq_num;
+		tcp_seq_num = qdf_cpu_to_be32(tcp_seq_num);
+
+		ip_len = tso_seg->seg.tso_flags.ip_len;
+		ip_len = qdf_cpu_to_be16(ip_len);
+
+		for (frag_cnt = 0; frag_cnt <= num_frags; frag_cnt++) {
+			qdf_mem_copy(qdf_nbuf_data(netbuf) + frag_len,
+				     tso_seg->seg.tso_frags[frag_cnt].vaddr,
+				     tso_seg->seg.tso_frags[frag_cnt].length);
+			frag_len += tso_seg->seg.tso_frags[frag_cnt].length;
+		}
+
+		qdf_spin_unlock_bh(&pdev->tso_seg_pool.tso_mutex);
+
+		qdf_mem_copy((qdf_nbuf_data(netbuf) + IPV4_PKT_LEN_OFFSET),
+			     &ip_len, sizeof(ip_len));
+		qdf_mem_copy((qdf_nbuf_data(netbuf) + IPV4_TCP_SEQ_NUM_OFFSET),
+			     &tcp_seq_num, sizeof(tcp_seq_num));
+	} else {
+		qdf_mem_copy(qdf_nbuf_data(netbuf),
+			     qdf_nbuf_data(tx_desc->netbuf),
+			     nbuf_len);
+	}
+
+	qdf_nbuf_push_head(
+			netbuf,
+			sizeof(struct htt_tx_data_hdr_information));
+	qdf_mem_copy(qdf_nbuf_data(netbuf), payload_hdr,
+		     sizeof(struct htt_tx_data_hdr_information));
+
+	ucfg_pkt_capture_tx_completion_process(
+				tx_desc->vdev_id,
+				netbuf, pkt_type,
+				tid, status,
+				TXRX_PKTCAPTURE_PKT_FORMAT_8023, bssid,
+				pdev->htt_pdev, payload_hdr->tx_retry_cnt);
+}
+#else
+static void
+ol_tx_pkt_capture_tx_completion_process(
+			ol_txrx_pdev_handle pdev,
+			struct ol_tx_desc_t *tx_desc,
+			struct htt_tx_data_hdr_information *payload_hdr,
+			uint8_t tid, uint8_t status)
+{
+}
+#endif /* WLAN_FEATURE_PKT_CAPTURE */
+
 #ifdef WLAN_FEATURE_TSF_PLUS
 static inline struct htt_tx_compl_ind_append_tx_tstamp *ol_tx_get_txtstamps(
 		u_int32_t *msg_word_header, u_int32_t **msg_word_payload,
@@ -862,10 +953,14 @@ ol_tx_completion_handler(ol_txrx_pdev_handle pdev,
 	struct ol_tx_desc_t *tx_desc;
 	uint32_t byte_cnt = 0;
 	qdf_nbuf_t netbuf;
-	tp_ol_packetdump_cb packetdump_cb;
+#if !defined(REMOVE_PKT_LOG)
+	ol_txrx_pktdump_cb packetdump_cb;
+	void *soc = cds_get_context(QDF_MODULE_ID_SOC);
+#endif
 	uint32_t is_tx_desc_freed = 0;
 	struct htt_tx_compl_ind_append_tx_tstamp *txtstamp_list = NULL;
 	struct htt_tx_compl_ind_append_tx_tsf64 *txtstamp64_list = NULL;
+	struct htt_tx_data_hdr_information *pkt_capture_txcomp_hdr_list = NULL;
 	u_int32_t *msg_word_header = (u_int32_t *)msg;
 	/*msg_word skip header*/
 	u_int32_t *msg_word_payload = msg_word_header + 1;
@@ -875,8 +970,11 @@ ol_tx_completion_handler(ol_txrx_pdev_handle pdev,
 	union ol_tx_desc_list_elem_t *tx_desc_last = NULL;
 	ol_tx_desc_list tx_descs;
 	uint64_t tx_tsf64;
+	uint8_t tid;
 
 	TAILQ_INIT(&tx_descs);
+
+	tid = HTT_TX_COMPL_IND_TID_GET(*msg_word);
 
 	ol_tx_delay_compute(pdev, status, desc_ids, num_msdus);
 	if (status == htt_tx_status_ok) {
@@ -886,6 +984,13 @@ ol_tx_completion_handler(ol_txrx_pdev_handle pdev,
 			txtstamp64_list = ol_tx_get_txtstamp64s(
 				msg_word_header, &msg_word_payload, num_msdus);
 	}
+
+	if ((ucfg_pkt_capture_get_pktcap_mode() &
+	     PKT_CAPTURE_MODE_DATA_ONLY))
+		pkt_capture_txcomp_hdr_list =
+				ucfg_pkt_capture_tx_get_txcomplete_data_hdr(
+								msg_word,
+								num_msdus);
 
 	for (i = 0; i < num_msdus; i++) {
 		tx_desc_id = desc_ids[i];
@@ -912,6 +1017,14 @@ ol_tx_completion_handler(ol_txrx_pdev_handle pdev,
 					(u_int64_t)txtstamp_list->timestamp[i]
 					);
 
+		if (pkt_capture_txcomp_hdr_list) {
+			ol_tx_pkt_capture_tx_completion_process(
+						pdev,
+						tx_desc,
+						&pkt_capture_txcomp_hdr_list[i],
+						tid, status);
+		}
+
 		QDF_NBUF_UPDATE_TX_PKT_COUNT(netbuf, QDF_NBUF_TX_PKT_FREE);
 
 		if (QDF_NBUF_CB_GET_PACKET_TYPE(netbuf) ==
@@ -930,12 +1043,15 @@ ol_tx_completion_handler(ol_txrx_pdev_handle pdev,
 						status);
 		ol_tx_update_ack_count(tx_desc, status);
 
+#if !defined(REMOVE_PKT_LOG)
 		if (tx_desc->pkt_type != OL_TX_FRM_TSO) {
 			packetdump_cb = pdev->ol_tx_packetdump_cb;
 			if (packetdump_cb)
-				packetdump_cb(netbuf, status,
-					tx_desc->vdev_id, TX_DATA_PKT);
+				packetdump_cb(soc,
+					      (struct cdp_vdev *)tx_desc->vdev,
+					      netbuf, status, TX_DATA_PKT);
 		}
+#endif
 
 		DPTRACE(qdf_dp_trace_ptr(netbuf,
 			QDF_DP_TRACE_FREE_PACKET_PTR_RECORD,
@@ -943,7 +1059,14 @@ ol_tx_completion_handler(ol_txrx_pdev_handle pdev,
 			qdf_nbuf_data_addr(netbuf),
 			sizeof(qdf_nbuf_data(netbuf)), tx_desc->id, status));
 		htc_pm_runtime_put(pdev->htt_pdev->htc_pdev);
-		ol_tx_desc_update_group_credit(pdev, tx_desc_id, 1, 0, status);
+		/*
+		 * If credits are reported through credit_update_ind then do not
+		 * update group credits on tx_complete_ind.
+		 */
+		if (!pdev->cfg.credit_update_enabled)
+			ol_tx_desc_update_group_credit(pdev,
+						       tx_desc_id,
+						       1, 0, status);
 		/* Per SDU update of byte count */
 		byte_cnt += qdf_nbuf_len(netbuf);
 		if (OL_TX_DESC_NO_REFS(tx_desc)) {
@@ -1010,7 +1133,7 @@ void ol_tx_desc_update_group_credit(ol_txrx_pdev_handle pdev,
 	struct ol_tx_desc_t *tx_desc;
 
 	if (tx_desc_id >= pdev->tx_desc.pool_size) {
-		qdf_print("%s: Invalid desc id", __func__);
+		qdf_print("Invalid desc id");
 		return;
 	}
 
@@ -1063,10 +1186,8 @@ void ol_tx_dump_group_credit_stats(ol_txrx_pdev_handle pdev)
 	int16_t curr_index, old_index, wrap_around;
 	uint16_t curr_credit, old_credit, mem_vdevs;
 
-	QDF_TRACE(QDF_MODULE_ID_TXRX, QDF_TRACE_LEVEL_ERROR,
-		  "Group credit stats:");
-	QDF_TRACE(QDF_MODULE_ID_TXRX, QDF_TRACE_LEVEL_ERROR,
-		  "  No: GrpID: Credit: Change: vdev_map");
+	txrx_nofl_info("Group credit stats:");
+	txrx_nofl_info("  No: GrpID: Credit: Change: vdev_map");
 
 	qdf_spin_lock_bh(&pdev->grp_stat_spinlock);
 	curr_index = pdev->grp_stats.last_valid_index;
@@ -1074,8 +1195,7 @@ void ol_tx_dump_group_credit_stats(ol_txrx_pdev_handle pdev)
 	qdf_spin_unlock_bh(&pdev->grp_stat_spinlock);
 
 	if (curr_index < 0) {
-		QDF_TRACE(QDF_MODULE_ID_TXRX, QDF_TRACE_LEVEL_ERROR,
-			  "Not initialized");
+		txrx_nofl_info("Not initialized");
 		return;
 	}
 
@@ -1104,19 +1224,15 @@ void ol_tx_dump_group_credit_stats(ol_txrx_pdev_handle pdev)
 			qdf_spin_unlock_bh(&pdev->grp_stat_spinlock);
 
 			if (!is_break)
-				QDF_TRACE(QDF_MODULE_ID_TXRX,
-					  QDF_TRACE_LEVEL_ERROR,
-					  "%4d: %5d: %6d %6d %8x",
-					  curr_index, j,
-					  curr_credit,
-					  (curr_credit - old_credit),
-					  mem_vdevs);
+				txrx_nofl_info("%4d: %5d: %6d %6d %8x",
+					       curr_index, j,
+					       curr_credit,
+					       (curr_credit - old_credit),
+					       mem_vdevs);
 			else
-				QDF_TRACE(QDF_MODULE_ID_TXRX,
-					  QDF_TRACE_LEVEL_ERROR,
-					  "%4d: %5d: %6d %6s %8x",
-					  curr_index, j,
-					  curr_credit, "NA", mem_vdevs);
+				txrx_nofl_info("%4d: %5d: %6d %6s %8x",
+					       curr_index, j,
+					       curr_credit, "NA", mem_vdevs);
 		}
 
 		if (is_break)
@@ -1152,14 +1268,14 @@ ol_tx_single_completion_handler(ol_txrx_pdev_handle pdev,
 {
 	struct ol_tx_desc_t *tx_desc;
 	qdf_nbuf_t netbuf;
-	tp_ol_packetdump_cb packetdump_cb;
+#if !defined(REMOVE_PKT_LOG)
+	ol_txrx_pktdump_cb packetdump_cb;
+	void *soc = cds_get_context(QDF_MODULE_ID_SOC);
+#endif
 
 	tx_desc = ol_tx_desc_find_check(pdev, tx_desc_id);
-	if (tx_desc == NULL) {
-		ol_txrx_err(
-				"%s: invalid desc_id(%u), ignore it.\n",
-				__func__,
-				tx_desc_id);
+	if (!tx_desc) {
+		ol_txrx_err("invalid desc_id(%u), ignore it", tx_desc_id);
 		return;
 	}
 
@@ -1170,10 +1286,12 @@ ol_tx_single_completion_handler(ol_txrx_pdev_handle pdev,
 	/* Do one shot statistics */
 	TXRX_STATS_UPDATE_TX_STATS(pdev, status, 1, qdf_nbuf_len(netbuf));
 
+#if !defined(REMOVE_PKT_LOG)
 	packetdump_cb = pdev->ol_tx_packetdump_cb;
 	if (packetdump_cb)
-		packetdump_cb(netbuf, status,
-			tx_desc->vdev->vdev_id, TX_MGMT_PKT);
+		packetdump_cb(soc, (struct cdp_vdev *)tx_desc->vdev,
+			      netbuf, status, TX_MGMT_PKT);
+#endif
 
 	if (OL_TX_DESC_NO_REFS(tx_desc)) {
 		ol_tx_desc_frame_free_nonstd(pdev, tx_desc,
@@ -1422,7 +1540,6 @@ ol_tx_delay_hist(struct cdp_pdev *ppdev,
 }
 
 #ifdef QCA_COMPUTE_TX_DELAY_PER_TID
-
 static uint8_t
 ol_tx_delay_tid_from_l3_hdr(struct ol_txrx_pdev_t *pdev,
 			    qdf_nbuf_t msdu, struct ol_tx_desc_t *tx_desc)
@@ -1433,7 +1550,7 @@ ol_tx_delay_tid_from_l3_hdr(struct ol_txrx_pdev_t *pdev,
 	int l2_hdr_size;
 
 	dest_addr = ol_tx_dest_addr_find(pdev, msdu);
-	if (NULL == dest_addr)
+	if (!dest_addr)
 		return QDF_NBUF_TX_EXT_TID_INVALID;
 
 	is_mcast = IEEE80211_IS_MULTICAST(dest_addr);
@@ -1483,11 +1600,9 @@ ol_tx_delay_tid_from_l3_hdr(struct ol_txrx_pdev_t *pdev,
 		return QDF_NBUF_TX_EXT_TID_INVALID;
 	}
 }
-#endif
 
 static int ol_tx_delay_category(struct ol_txrx_pdev_t *pdev, uint16_t msdu_id)
 {
-#ifdef QCA_COMPUTE_TX_DELAY_PER_TID
 	struct ol_tx_desc_t *tx_desc = ol_tx_desc_find(pdev, msdu_id);
 	uint8_t tid;
 	qdf_nbuf_t msdu = tx_desc->netbuf;
@@ -1504,10 +1619,13 @@ static int ol_tx_delay_category(struct ol_txrx_pdev_t *pdev, uint16_t msdu_id)
 		}
 	}
 	return tid;
-#else
-	return 0;
-#endif
 }
+#else
+static int ol_tx_delay_category(struct ol_txrx_pdev_t *pdev, uint16_t msdu_id)
+{
+	return 0;
+}
+#endif
 
 static inline int
 ol_tx_delay_hist_bin(struct ol_txrx_pdev_t *pdev, uint32_t delay_ticks)
@@ -1610,67 +1728,13 @@ ol_tx_delay_compute(struct ol_txrx_pdev_t *pdev,
 
 #endif /* QCA_COMPUTE_TX_DELAY */
 
-/**
- * ol_register_packetdump_callback() - registers
- *  tx data packet, tx mgmt. packet and rx data packet
- *  dump callback handler.
- *
- * @ol_tx_packetdump_cb: tx packetdump cb
- * @ol_rx_packetdump_cb: rx packetdump cb
- *
- * This function is used to register tx data pkt, tx mgmt.
- * pkt and rx data pkt dump callback
- *
- * Return: None
- *
- */
-void ol_register_packetdump_callback(tp_ol_packetdump_cb ol_tx_packetdump_cb,
-					tp_ol_packetdump_cb ol_rx_packetdump_cb)
-{
-	ol_txrx_pdev_handle pdev = cds_get_context(QDF_MODULE_ID_TXRX);
-
-	if (!pdev) {
-		ol_txrx_err(
-				"%s: pdev is NULL", __func__);
-		return;
-	}
-
-	pdev->ol_tx_packetdump_cb = ol_tx_packetdump_cb;
-	pdev->ol_rx_packetdump_cb = ol_rx_packetdump_cb;
-}
-
-/**
- * ol_deregister_packetdump_callback() - deregidters
- *  tx data packet, tx mgmt. packet and rx data packet
- *  dump callback handler
- *
- * This function is used to deregidter tx data pkt.,
- * tx mgmt. pkt and rx data pkt. dump callback
- *
- * Return: None
- *
- */
-void ol_deregister_packetdump_callback(void)
-{
-	ol_txrx_pdev_handle pdev = cds_get_context(QDF_MODULE_ID_TXRX);
-
-	if (!pdev) {
-		ol_txrx_err(
-				"%s: pdev is NULL", __func__);
-		return;
-	}
-
-	pdev->ol_tx_packetdump_cb = NULL;
-	pdev->ol_rx_packetdump_cb = NULL;
-}
-
 #ifdef WLAN_FEATURE_TSF_PLUS
 void ol_register_timestamp_callback(tp_ol_timestamp_cb ol_tx_timestamp_cb)
 {
 	ol_txrx_pdev_handle pdev = cds_get_context(QDF_MODULE_ID_TXRX);
 
 	if (!pdev) {
-		ol_txrx_err("%s: pdev is NULL", __func__);
+		ol_txrx_err("pdev is NULL");
 		return;
 	}
 	pdev->ol_tx_timestamp_cb = ol_tx_timestamp_cb;
@@ -1681,7 +1745,7 @@ void ol_deregister_timestamp_callback(void)
 	ol_txrx_pdev_handle pdev = cds_get_context(QDF_MODULE_ID_TXRX);
 
 	if (!pdev) {
-		ol_txrx_err("%s: pdev is NULL", __func__);
+		ol_txrx_err("pdev is NULL");
 		return;
 	}
 	pdev->ol_tx_timestamp_cb = NULL;

@@ -72,7 +72,8 @@ extern "C" {
 #ifdef FEATURE_FW_LOG_PARSING
 /*
  * set the dbglog parser type
- */int
+ */
+int
 dbglog_parser_type_init(wmi_unified_t wmi_handle, int type);
 
 /** dbglog_int - Registers a WMI event handle for WMI_DBGMSG_EVENT
@@ -108,12 +109,6 @@ dbglog_set_timestamp_resolution(wmi_unified_t wmi_handle,
 int
 dbglog_report_enable(wmi_unified_t wmi_handle, A_BOOL isenable);
 
-#ifdef CONFIG_MCL
-/*
- * enum DBGLOG_LOG_LVL is not converged between WIN and MCL.
- * So this function declaration needs to be disabled from WIN side.
- */
-
 /** Set the log level
  * @brief DBGLOG_INFO - Information lowest log level
  * @brief DBGLOG_WARNING
@@ -121,7 +116,6 @@ dbglog_report_enable(wmi_unified_t wmi_handle, A_BOOL isenable);
  */
 int
 dbglog_set_log_lvl(wmi_unified_t wmi_handle, DBGLOG_LOG_LVL log_lvl);
-#endif
 
 /*
  * set the debug log level for a given module
@@ -209,13 +203,11 @@ dbglog_report_enable(wmi_unified_t wmi_handle, A_BOOL isenable)
 	return A_OK;
 }
 
-#ifdef CONFIG_MCL
 static inline int
 dbglog_set_log_lvl(wmi_unified_t wmi_handle, DBGLOG_LOG_LVL log_lvl)
 {
 	return A_OK;
 }
-#endif
 
 static inline int cnss_diag_activate_service(void)
 {

@@ -1,40 +1,21 @@
+# SPDX-License-Identifier: GPL-2.0-only
 config QCOM_KGSL
-	tristate "Qualcomm 3D Graphics driver"
-	default n
+	tristate "Qualcomm Technologies, Inc. 3D Graphics driver"
 	depends on ARCH_QCOM
+	depends on QCOM_QFPROM
 	select GENERIC_ALLOCATOR
 	select FW_LOADER
 	select PM_DEVFREQ
+	select QCOM_SCM
 	select DEVFREQ_GOV_SIMPLE_ONDEMAND
 	select DEVFREQ_GOV_PERFORMANCE
 	select DEVFREQ_GOV_QCOM_ADRENO_TZ
 	select DEVFREQ_GOV_QCOM_GPUBW_MON
-	select ONESHOT_SYNC if SYNC
-	---help---
-	  3D graphics driver for the Adreno family of GPUs from Qualcomm.
-	  Required to use hardware accelerated OpenGL and compute on Qualcomm
-	  targets.
-
-config QCOM_KGSL_CFF_DUMP
-	bool "Enable KGSL Common File Format (CFF) Dump Feature [Use with caution]"
-	default n
-	depends on QCOM_KGSL
-	select RELAY
-	---help---
-	  This is an analysis and diagnostic feature only, and should only be
-	  turned on during KGSL GPU diagnostics and will slow down the KGSL
-	  performance sigificantly, hence *do not use in production builds*.
-	  When enabled, CFF Dump is on at boot. It can be turned off at runtime
-	  via 'echo 0 > /d/kgsl/cff_dump'.  The log can be captured via
-	  /d/kgsl-cff/cpu[0|1].
-
-config QCOM_KGSL_CFF_DUMP_NO_CONTEXT_MEM_DUMP
-	bool "When selected will disable KGSL CFF Dump for context switches"
-	default n
-	depends on QCOM_KGSL_CFF_DUMP
-	---help---
-	  Dumping all the memory for every context switch can produce quite
-	  huge log files, to reduce this, turn this feature on.
+	help
+	  3D graphics driver for the Adreno family of GPUs from QTI.
+	  Required to use hardware accelerated OpenGL, compute and Vulkan
+	  on QTI targets. This includes power management, memory management,
+	  and scheduling for the Adreno GPUs.
 
 config QCOM_ADRENO_DEFAULT_GOVERNOR
 	string "devfreq governor for the adreno core"
@@ -45,3 +26,31 @@ config QCOM_ADRENO_DEFAULT_GOVERNOR
 config QCOM_KGSL_IOMMU
 	bool
 	default y if QCOM_KGSL && (MSM_IOMMU || ARM_SMMU)
+
+config QCOM_KGSL_CORESIGHT
+	bool "Enable coresight support for the Adreno GPU"
+	depends on QCOM_KGSL && CORESIGHT
+	help
+	  When enabled, the Adreno GPU is available as a source for Coresight
+	  data. On a6xx targets there are two sources available for the GX and
+	  CX domains respectively. Debug kernels should say 'Y' here.
+
+config QCOM_KGSL_USE_SHMEM
+	bool "Enable using shmem for memory allocations"
+	depends on QCOM_KGSL
+	help
+	  Say 'Y' to enable using shmem for memory allocations. If enabled,
+	  there will be no support for the memory pools and higher order pages.
+	  But using shmem will help in making kgsl pages available for
+	  reclaiming.
+
+config QCOM_KGSL_PROCESS_RECLAIM
+	bool "Make driver pages available for reclaim"
+	depends on QCOM_KGSL && PROCESS_RECLAIM
+	select QCOM_KGSL_USE_SHMEM
+	help
+	  Say 'Y' to make driver pages available for reclaiming. If enabled,
+	  shmem will be used for allocation. kgsl would know the process
+	  foreground/background activity through the sysfs entry exposed per
+	  process. Based on this kgsl can unpin the pages of the process and
+	  make those pages available to the Per Process Reclaim (PPR).

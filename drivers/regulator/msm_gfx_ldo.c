@@ -1,20 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2015-2020, The Linux Foundation. All rights reserved.
  */
 
 #define pr_fmt(fmt) "GFX_LDO: %s: " fmt, __func__
 
 #include <linux/bitops.h>
+#ifdef CONFIG_DEBUG_FS
 #include <linux/debugfs.h>
+#endif
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
@@ -111,7 +105,9 @@ struct msm_gfx_ldo {
 	struct regulator_dev	*rdev;
 	struct regulator	*vdd_cx;
 	struct regulator	*mem_acc_vreg;
+#ifdef CONFIG_DEBUG_FS
 	struct dentry		*debugfs;
+#endif
 
 	u32			num_corners;
 	u32			num_ldo_corners;
@@ -186,7 +182,6 @@ static const int msm8953_fuse_ref_volt[MSM8953_LDO_FUSE_CORNERS] = {
 enum {
 	MSM8953_SOC_ID,
 	SDM660_SOC_ID,
-	SDM630_SOC_ID,
 };
 
 static int convert_open_loop_voltage_fuse(int ref_volt, int step_volt,
@@ -1049,7 +1044,7 @@ static int msm_gfx_ldo_efuse_init(struct platform_device *pdev,
 	}
 
 	ldo_vreg->efuse_addr = res->start;
-	len = res->end - res->start + 1;
+	len = resource_size(res);
 
 	ldo_vreg->efuse_base = devm_ioremap(&pdev->dev,
 				ldo_vreg->efuse_addr, len);
@@ -1084,7 +1079,7 @@ static int msm_gfx_ldo_mem_acc_init(struct msm_gfx_ldo *ldo_vreg)
 	}
 
 	if (!of_find_property(of_node, "qcom,mem-acc-corner-map", &len)) {
-		pr_err("qcom,mem-acc-corner-map missing");
+		pr_err("qcom,mem-acc-corner-map missing\n");
 		return -EINVAL;
 	}
 
@@ -1122,7 +1117,7 @@ static int msm_gfx_ldo_init(struct platform_device *pdev,
 	}
 
 	ldo_vreg->ldo_addr = res->start;
-	len = res->end - res->start + 1;
+	len = resource_size(res);
 
 	ldo_vreg->ldo_base = devm_ioremap(ldo_vreg->dev,
 					ldo_vreg->ldo_addr, len);
@@ -1174,7 +1169,7 @@ static int ldo_parse_cx_parameters(struct msm_gfx_ldo *ldo_vreg)
 	}
 
 	if (!of_find_property(of_node, "qcom,vdd-cx-corner-map", &len)) {
-		pr_err("qcom,vdd-cx-corner-map missing");
+		pr_err("qcom,vdd-cx-corner-map missing\n");
 		return -EINVAL;
 	}
 
@@ -1280,6 +1275,7 @@ static int msm_gfx_ldo_target_init(struct msm_gfx_ldo *ldo_vreg)
 	return 0;
 }
 
+#ifdef CONFIG_DEBUG_FS
 static int debugfs_ldo_mode_disable_set(void *data, u64 val)
 {
 	struct msm_gfx_ldo *ldo_vreg = data;
@@ -1301,7 +1297,7 @@ static int debugfs_ldo_mode_disable_get(void *data, u64 *val)
 	return 0;
 }
 
-DEFINE_SIMPLE_ATTRIBUTE(ldo_mode_disable_fops, debugfs_ldo_mode_disable_get,
+DEFINE_DEBUGFS_ATTRIBUTE(ldo_mode_disable_fops, debugfs_ldo_mode_disable_get,
 				debugfs_ldo_mode_disable_set, "%llu\n");
 
 static int debugfs_ldo_set_voltage(void *data, u64 val)
@@ -1382,15 +1378,8 @@ done:
 	mutex_unlock(&ldo_vreg->ldo_mutex);
 	return rc;
 }
-DEFINE_SIMPLE_ATTRIBUTE(ldo_voltage_fops, debugfs_ldo_get_voltage,
+DEFINE_DEBUGFS_ATTRIBUTE(ldo_voltage_fops, debugfs_ldo_get_voltage,
 				debugfs_ldo_set_voltage, "%llu\n");
-
-static int msm_gfx_ldo_debug_info_open(struct inode *inode, struct file *file)
-{
-	file->private_data = inode->i_private;
-
-	return 0;
-}
 
 static ssize_t msm_gfx_ldo_debug_info_read(struct file *file, char __user *buff,
 				size_t count, loff_t *ppos)
@@ -1406,7 +1395,7 @@ static ssize_t msm_gfx_ldo_debug_info_read(struct file *file, char __user *buff,
 
 	mutex_lock(&ldo_vreg->ldo_mutex);
 
-	len = snprintf(debugfs_buf + ret, PAGE_SIZE - ret,
+	len = scnprintf(debugfs_buf + ret, PAGE_SIZE - ret,
 		"Regulator_enable = %d Regulator mode = %s Corner = %d LDO-voltage = %d uV\n",
 		ldo_vreg->vreg_enabled,
 		ldo_vreg->mode == BHS_MODE ? "BHS" : "LDO",
@@ -1417,7 +1406,7 @@ static ssize_t msm_gfx_ldo_debug_info_read(struct file *file, char __user *buff,
 	for (i = 0; i < MAX_LDO_REGS; i++) {
 		reg[i] = 0;
 		reg[i] = readl_relaxed(ldo_vreg->ldo_base + (i * 4));
-		len = snprintf(debugfs_buf + ret, PAGE_SIZE - ret,
+		len = scnprintf(debugfs_buf + ret, PAGE_SIZE - ret,
 				"%s = 0x%x\n",  register_str[i], reg[i]);
 		ret += len;
 	}
@@ -1431,11 +1420,11 @@ static ssize_t msm_gfx_ldo_debug_info_read(struct file *file, char __user *buff,
 }
 
 static const struct file_operations msm_gfx_ldo_debug_info_fops = {
-	.open = msm_gfx_ldo_debug_info_open,
+	.open = simple_open,
 	.read = msm_gfx_ldo_debug_info_read,
 };
 
-static void msm_gfx_ldo_debugfs_init(struct msm_gfx_ldo *ldo_vreg)
+static void __maybe_unused msm_gfx_ldo_debugfs_init(struct msm_gfx_ldo *ldo_vreg)
 {
 	struct dentry *temp;
 
@@ -1471,6 +1460,7 @@ static void msm_gfx_ldo_debugfs_remove(struct msm_gfx_ldo *ldo_vreg)
 {
 	debugfs_remove_recursive(ldo_vreg->debugfs);
 }
+#endif
 
 static int msm_gfx_ldo_corner_config_init(struct msm_gfx_ldo *ldo_vreg,
 		struct platform_device *pdev)
@@ -1479,7 +1469,7 @@ static int msm_gfx_ldo_corner_config_init(struct msm_gfx_ldo *ldo_vreg,
 
 	rc = msm_gfx_ldo_target_init(ldo_vreg);
 	if (rc) {
-		pr_err("Unable to initialize target specific data rc=%d", rc);
+		pr_err("Unable to initialize target specific data rc=%d\n", rc);
 		return rc;
 	}
 
@@ -1519,10 +1509,6 @@ static const struct of_device_id msm_gfx_ldo_match_table[] = {
 	{
 		.compatible = "qcom,sdm660-gfx-ldo",
 		.data = (void *)(uintptr_t)SDM660_SOC_ID,
-	},
-	{
-		.compatible = "qcom,sdm630-gfx-ldo",
-		.data = (void *)(uintptr_t)SDM630_SOC_ID,
 	},
 	{}
 };
@@ -1578,7 +1564,6 @@ static int msm_gfx_ldo_probe(struct platform_device *pdev)
 		}
 		break;
 	case SDM660_SOC_ID:
-	case SDM630_SOC_ID:
 		ldo_vreg->ldo_init_config = sdm660_ldo_config;
 		ldo_vreg->ops_type = VOLTAGE;
 		init_data->constraints.valid_ops_mask
@@ -1616,7 +1601,9 @@ static int msm_gfx_ldo_probe(struct platform_device *pdev)
 		return rc;
 	}
 
+#ifdef CONFIG_DEBUG_FS
 	msm_gfx_ldo_debugfs_init(ldo_vreg);
+#endif
 
 	return 0;
 }
@@ -1627,7 +1614,9 @@ static int msm_gfx_ldo_remove(struct platform_device *pdev)
 
 	regulator_unregister(ldo_vreg->rdev);
 
+#ifdef CONFIG_DEBUG_FS
 	msm_gfx_ldo_debugfs_remove(ldo_vreg);
+#endif
 
 	return 0;
 }
@@ -1636,7 +1625,6 @@ static struct platform_driver msm_gfx_ldo_driver = {
 	.driver		= {
 		.name		= "qcom,msm-gfx-ldo",
 		.of_match_table = msm_gfx_ldo_match_table,
-		.owner		= THIS_MODULE,
 	},
 	.probe		= msm_gfx_ldo_probe,
 	.remove		= msm_gfx_ldo_remove,

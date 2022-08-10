@@ -79,7 +79,7 @@ static QDF_STATUS pmo_core_do_enable_gtk_offload(
 		return QDF_STATUS_E_INVAL;
 	}
 
-	if (!wlan_vdev_is_up(vdev))
+	if (wlan_vdev_is_up(vdev) != QDF_STATUS_SUCCESS)
 		return QDF_STATUS_E_INVAL;
 
 	vdev_id = pmo_vdev_get_id(vdev);
@@ -122,7 +122,7 @@ static QDF_STATUS pmo_core_is_gtk_enabled_in_fwr(
 		return QDF_STATUS_E_INVAL;
 	}
 
-	if (!wlan_vdev_is_up(vdev))
+	if (wlan_vdev_is_up(vdev) != QDF_STATUS_SUCCESS)
 		return QDF_STATUS_E_INVAL;
 
 	status = pmo_get_vdev_bss_peer_mac_addr(vdev,
@@ -137,7 +137,7 @@ static QDF_STATUS pmo_core_is_gtk_enabled_in_fwr(
 		pmo_err("cache request mac:%pM, peer mac:%pM are not same",
 			vdev_ctx->vdev_gtk_req.bssid.bytes,
 			peer_bssid.bytes);
-		 return QDF_STATUS_E_INVAL;
+		return QDF_STATUS_E_INVAL;
 	}
 
 	if (vdev_ctx->vdev_gtk_req.flags != PMO_GTK_OFFLOAD_ENABLE) {
@@ -174,7 +174,6 @@ QDF_STATUS pmo_core_cache_gtk_offload_req(struct wlan_objmgr_vdev *vdev,
 	enum QDF_OPMODE opmode;
 	uint8_t vdev_id;
 
-	pmo_enter();
 	if (!gtk_req) {
 		pmo_err("gtk_req is NULL");
 		status = QDF_STATUS_E_INVAL;
@@ -205,7 +204,6 @@ QDF_STATUS pmo_core_cache_gtk_offload_req(struct wlan_objmgr_vdev *vdev,
 dec_ref:
 	pmo_vdev_put_ref(vdev);
 out:
-	pmo_exit();
 
 	return status;
 }
@@ -216,7 +214,6 @@ QDF_STATUS pmo_core_flush_gtk_offload_req(struct wlan_objmgr_vdev *vdev)
 	uint8_t vdev_id;
 	QDF_STATUS status;
 
-	pmo_enter();
 	if (!vdev) {
 		pmo_err("psoc is NULL");
 		status = QDF_STATUS_E_INVAL;
@@ -241,7 +238,6 @@ QDF_STATUS pmo_core_flush_gtk_offload_req(struct wlan_objmgr_vdev *vdev)
 dec_ref:
 	pmo_vdev_put_ref(vdev);
 out:
-	pmo_exit();
 
 	return status;
 }

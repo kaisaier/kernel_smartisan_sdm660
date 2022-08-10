@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2017-2020 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -46,22 +46,6 @@ static void hdd_deinit_pdev_os_priv(struct wlan_objmgr_pdev *pdev)
 {
 	os_if_spectral_netlink_deinit(pdev);
 	wlan_cfg80211_scan_priv_deinit(pdev);
-}
-
-static struct vdev_osif_priv *
-hdd_init_vdev_os_priv(struct hdd_adapter *adapter)
-{
-	struct vdev_osif_priv *os_priv;
-
-	os_priv = qdf_mem_malloc(sizeof(*os_priv));
-	if (!os_priv)
-		return NULL;
-
-	/* Initialize the vdev OS private structure*/
-	os_priv->wdev = adapter->dev->ieee80211_ptr;
-	os_priv->legacy_osif_priv = adapter;
-
-	return os_priv;
 }
 
 static void hdd_init_psoc_qdf_ctx(struct wlan_objmgr_psoc *psoc)
@@ -151,7 +135,7 @@ int hdd_objmgr_create_and_store_pdev(struct hdd_context *hdd_ctx)
 	}
 
 	priv = qdf_mem_malloc(sizeof(*priv));
-	if (priv == NULL) {
+	if (!priv) {
 		hdd_err("pdev os obj create failed");
 		return -ENOMEM;
 	}
@@ -241,25 +225,24 @@ int hdd_objmgr_create_and_store_vdev(struct wlan_objmgr_pdev *pdev,
 		return -EINVAL;
 	}
 
-	osif_priv = hdd_init_vdev_os_priv(adapter);
-	if (!osif_priv) {
-		hdd_err("Failed to allocate osif_priv; out of memory");
-		return -ENOMEM;
-	}
-
 	vdev_params.opmode = adapter->device_mode;
-	vdev_params.osifp = osif_priv;
 	qdf_mem_copy(vdev_params.macaddr,
 		     adapter->mac_addr.bytes,
 		     QDF_NET_MAC_ADDR_MAX_LEN);
+
+	vdev_params.size_vdev_priv = sizeof(*osif_priv);
 
 	vdev = wlan_objmgr_vdev_obj_create(pdev, &vdev_params);
 	if (!vdev) {
 		hdd_err("Failed to create vdev object");
 		errno = -ENOMEM;
-		qdf_mem_free(osif_priv);
 		return errno;
 	}
+
+	/* Initialize the vdev OS private structure*/
+	osif_priv = wlan_vdev_get_ospriv(vdev);
+	osif_priv->wdev = adapter->dev->ieee80211_ptr;
+	osif_priv->legacy_osif_priv = adapter;
 
 	/*
 	 * To enable legacy use cases, we need to delay physical vdev destroy
@@ -275,7 +258,7 @@ int hdd_objmgr_create_and_store_vdev(struct wlan_objmgr_pdev *pdev,
 
 	qdf_spin_lock_bh(&adapter->vdev_lock);
 	adapter->vdev = vdev;
-	adapter->session_id = wlan_vdev_get_id(vdev);
+	adapter->vdev_id = wlan_vdev_get_id(vdev);
 	qdf_spin_unlock_bh(&adapter->vdev_lock);
 
 	return 0;
@@ -293,7 +276,7 @@ int hdd_objmgr_release_and_destroy_vdev(struct hdd_adapter *adapter)
 	qdf_spin_lock_bh(&adapter->vdev_lock);
 	vdev = adapter->vdev;
 	adapter->vdev = NULL;
-	adapter->session_id = HDD_SESSION_ID_INVALID;
+	adapter->vdev_id = WLAN_UMAC_VDEV_ID_MAX;
 	qdf_spin_unlock_bh(&adapter->vdev_lock);
 
 	QDF_BUG(vdev);
@@ -327,7 +310,7 @@ struct wlan_objmgr_vdev *__hdd_objmgr_get_vdev(struct hdd_adapter *adapter,
 	qdf_spin_unlock_bh(&adapter->vdev_lock);
 
 	if (!vdev)
-		hdd_err("VDEV is NULL (via %s)", func);
+		hdd_debug("VDEV is NULL (via %s)", func);
 
 	return vdev;
 }
@@ -346,26 +329,18 @@ int hdd_objmgr_set_peer_mlme_auth_state(struct wlan_objmgr_vdev *vdev,
 					bool is_authenticated)
 {
 	struct wlan_objmgr_peer *peer;
-	QDF_STATUS status;
 
-	wlan_vdev_obj_lock(vdev);
-	peer = wlan_vdev_get_bsspeer(vdev);
-	wlan_vdev_obj_unlock(vdev);
-
+	peer = wlan_objmgr_vdev_try_get_bsspeer(vdev, WLAN_OSIF_ID);
 	if (!peer) {
 		hdd_err("peer is null");
-
 		return -EINVAL;
 	}
-	status = wlan_objmgr_peer_try_get_ref(peer, WLAN_TDLS_NB_ID);
-	if (status != QDF_STATUS_SUCCESS)
-		return -EINVAL;
 
 	wlan_peer_obj_lock(peer);
 	wlan_peer_mlme_set_auth_state(peer, is_authenticated);
 	wlan_peer_obj_unlock(peer);
 
-	wlan_objmgr_peer_release_ref(peer, WLAN_TDLS_NB_ID);
+	wlan_objmgr_peer_release_ref(peer, WLAN_OSIF_ID);
 	return 0;
 }
 
@@ -374,13 +349,9 @@ int hdd_objmgr_set_peer_mlme_state(struct wlan_objmgr_vdev *vdev,
 {
 	struct wlan_objmgr_peer *peer;
 
-	wlan_vdev_obj_lock(vdev);
-	peer = wlan_vdev_get_bsspeer(vdev);
-	wlan_vdev_obj_unlock(vdev);
-
+	peer = wlan_objmgr_vdev_try_get_bsspeer(vdev, WLAN_OSIF_ID);
 	if (!peer) {
 		hdd_err("peer is null");
-
 		return -EINVAL;
 	}
 
@@ -388,6 +359,7 @@ int hdd_objmgr_set_peer_mlme_state(struct wlan_objmgr_vdev *vdev,
 	wlan_peer_mlme_set_state(peer, WLAN_ASSOC_STATE);
 	wlan_peer_obj_unlock(peer);
 
+	wlan_objmgr_peer_release_ref(peer, WLAN_OSIF_ID);
 	return 0;
 }
 

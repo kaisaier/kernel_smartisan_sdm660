@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014, 2017-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2014, 2017-2020 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -26,13 +26,17 @@
  *
  */
 
+#include "wlan_hdd_main.h"
 struct hdd_context;
 
 #define EXTSCAN_EVENT_BUF_SIZE 4096
 
-#ifdef FEATURE_WLAN_EXTSCAN
+int wlan_hdd_cfg80211_extscan_get_valid_channels(struct wiphy *wiphy,
+						 struct wireless_dev
+						 *wdev, const void *data,
+						 int data_len);
 
-#include "wlan_hdd_main.h"
+#ifdef FEATURE_WLAN_EXTSCAN
 
 /*
  * Used to allocate the size of 4096 for the EXTScan NL data.
@@ -48,11 +52,6 @@ int wlan_hdd_cfg80211_extscan_start(struct wiphy *wiphy,
 int wlan_hdd_cfg80211_extscan_stop(struct wiphy *wiphy,
 				   struct wireless_dev *wdev,
 				   const void *data, int data_len);
-
-int wlan_hdd_cfg80211_extscan_get_valid_channels(struct wiphy *wiphy,
-						 struct wireless_dev
-						 *wdev, const void *data,
-						 int data_len);
 
 int wlan_hdd_cfg80211_extscan_get_capabilities(struct wiphy *wiphy,
 					       struct wireless_dev *wdev,
@@ -100,9 +99,26 @@ int wlan_hdd_cfg80211_reset_passpoint_list(struct wiphy *wiphy,
 						const void *data,
 						int data_len);
 
+/**
+ * wlan_hdd_cfg80211_extscan_callback() - ext scan callback
+ * @hdd_handle: Opaque handle to hdd context
+ * @event_id: Event identifier
+ * @msg: Pointer to message
+ *
+ * Return: none
+ */
+void wlan_hdd_cfg80211_extscan_callback(hdd_handle_t hdd_handle,
+					const uint16_t event_id, void *msg);
+
 void wlan_hdd_cfg80211_extscan_init(struct hdd_context *hdd_ctx);
 
 #else /* FEATURE_WLAN_EXTSCAN */
+
+static inline
+void wlan_hdd_cfg80211_extscan_callback(hdd_handle_t hdd_handle,
+					const uint16_t event_id, void *msg)
+{
+}
 
 static inline void wlan_hdd_cfg80211_extscan_init(struct hdd_context *hdd_ctx)
 {

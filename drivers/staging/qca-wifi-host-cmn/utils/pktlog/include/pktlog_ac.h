@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2019 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -102,6 +102,7 @@ struct pktlog_dev_t {
 	void *htc_pdev;
 	bool vendor_cmd_send;
 	uint8_t callback_type;
+	uint32_t invalid_packets;
 };
 
 #define PKTLOG_SYSCTL_SIZE      14
@@ -131,6 +132,9 @@ void pktlog_callback(void *pdev, enum WDI_EVENT event, void *log_data,
 void pktlog_init(struct hif_opaque_softc *scn);
 int pktlog_enable(struct hif_opaque_softc *scn, int32_t log_state,
 		 bool, uint8_t, uint32_t);
+int __pktlog_enable(struct hif_opaque_softc *scn, int32_t log_state,
+		    bool ini_triggered, uint8_t user_triggered,
+		    uint32_t is_iwpriv_command);
 int pktlog_setsize(struct hif_opaque_softc *scn, int32_t log_state);
 int pktlog_clearbuff(struct hif_opaque_softc *scn, bool clear_buff);
 int pktlog_disable(struct hif_opaque_softc *scn);
@@ -166,6 +170,14 @@ static inline void pktlog_init(struct hif_opaque_softc *scn)
 static inline int pktlog_enable(struct hif_opaque_softc *scn, int32_t log_state,
 				bool ini, uint8_t user,
 				uint32_t is_iwpriv_command)
+{
+	return 0;
+}
+
+static inline
+int __pktlog_enable(struct hif_opaque_softc *scn, int32_t log_state,
+		    bool ini_triggered, uint8_t user_triggered,
+		    uint32_t is_iwpriv_command)
 {
 	return 0;
 }

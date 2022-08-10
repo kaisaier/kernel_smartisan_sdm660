@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2020 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -39,6 +39,7 @@
 #include "hif.h"
 #include "multibus.h"
 #include "hif_unit_test_suspend_i.h"
+#include "qdf_cpuhp.h"
 
 #define HIF_MIN_SLEEP_INACTIVITY_TIME_MS     50
 #define HIF_SLEEP_INACTIVITY_TIMER_PERIOD_MS 60
@@ -80,6 +81,8 @@
 #define AR6320_FW_3_2  (0x32)
 #define QCA6290_EMULATION_DEVICE_ID (0xabcd)
 #define QCA6290_DEVICE_ID (0x1100)
+#define QCA6390_EMULATION_DEVICE_ID (0x0108)
+#define QCA6390_DEVICE_ID (0x1101)
 #define ADRASTEA_DEVICE_ID_P2_E12 (0x7021)
 #define AR9887_DEVICE_ID    (0x0050)
 #define AR900B_DEVICE_ID    (0x0040)
@@ -92,10 +95,19 @@
 					actual number once available.
 					currently defining this to 0xffff for
 					emulation purpose */
+#define QCA8074V2_DEVICE_ID (0xfffe) /* Todo: replace this with actual number */
+#define QCA6018_DEVICE_ID (0xfffd) /* Todo: replace this with actual number */
+/* Genoa */
+#define QCN7605_DEVICE_ID  (0x1102) /* Genoa PCIe device ID*/
+#define QCN7605_COMPOSITE  (0x9900)
+#define QCN7605_STANDALONE  (0x9901)
+
 #define RUMIM2M_DEVICE_ID_NODE0	0xabc0
 #define RUMIM2M_DEVICE_ID_NODE1	0xabc1
 #define RUMIM2M_DEVICE_ID_NODE2	0xabc2
 #define RUMIM2M_DEVICE_ID_NODE3	0xabc3
+#define RUMIM2M_DEVICE_ID_NODE4	0xaa10
+#define RUMIM2M_DEVICE_ID_NODE5	0xaa11
 
 #define HIF_GET_PCI_SOFTC(scn) ((struct hif_pci_softc *)scn)
 #define HIF_GET_CE_STATE(scn) ((struct HIF_CE_state *)scn)
@@ -118,12 +130,13 @@ struct hif_ce_stats {
 struct ce_desc_hist {
 	qdf_atomic_t history_index[CE_COUNT_MAX];
 	uint32_t enable[CE_COUNT_MAX];
-	uint32_t data_enable[CE_COUNT_MAX];
+	bool data_enable[CE_COUNT_MAX];
+	qdf_mutex_t ce_dbg_datamem_lock[CE_COUNT_MAX];
 	uint32_t hist_index;
 	uint32_t hist_id;
 	void *hist_ev[CE_COUNT_MAX];
 };
-#endif /* #if defined(HIF_CONFIG_SLUB_DEBUG_ON) || HIF_CE_DEBUG_DATA_BUF */
+#endif /*defined(HIF_CONFIG_SLUB_DEBUG_ON) || defined(HIF_CE_DEBUG_DATA_BUF)*/
 
 struct hif_softc {
 	struct hif_opaque_softc osc;
@@ -140,6 +153,7 @@ struct hif_softc {
 	/* Packet statistics */
 	struct hif_ce_stats pkt_stats;
 	enum hif_target_status target_status;
+	uint64_t event_disable_mask;
 
 	struct targetdef_s *targetdef;
 	struct ce_reg_def *target_ce_def;
@@ -159,7 +173,6 @@ struct hif_softc {
 	qdf_dma_addr_t paddr_rri_on_ddr;
 	int linkstate_vote;
 	bool fastpath_mode_on;
-	bool polled_mode_on;
 	atomic_t tasklet_from_intr;
 	int htc_htt_tx_endpoint;
 	qdf_dma_addr_t mem_pa;
@@ -192,9 +205,14 @@ struct hif_softc {
  */
 #if defined(HIF_CONFIG_SLUB_DEBUG_ON) || defined(HIF_CE_DEBUG_DATA_BUF)
 	struct ce_desc_hist hif_ce_desc_hist;
-#endif /* #if defined(HIF_CONFIG_SLUB_DEBUG_ON) || HIF_CE_DEBUG_DATA_BUF */
+#endif /*defined(HIF_CONFIG_SLUB_DEBUG_ON) || defined(HIF_CE_DEBUG_DATA_BUF)*/
+
 #ifdef IPA_OFFLOAD
 	qdf_shared_mem_t *ipa_ce_ring;
+#endif
+#ifdef HIF_CPU_PERF_AFFINE_MASK
+	/* The CPU hotplug event registration handle */
+	struct qdf_cpuhp_handler *cpuhp_event_handle;
 #endif
 };
 
@@ -207,6 +225,25 @@ static inline void *hif_get_hal_handle(void *hif_hdl)
 
 	return sc->hal_soc;
 }
+
+/**
+ * Max waiting time during Runtime PM suspend to finish all
+ * the tasks. This is in the multiple of 10ms.
+ */
+#define HIF_TASK_DRAIN_WAIT_CNT 25
+
+/**
+ * hif_try_complete_tasks() - Try to complete all the pending tasks
+ * @scn: HIF context
+ *
+ * Try to complete all the pending datapath tasks, i.e. tasklets,
+ * DP group tasklets and works which are queued, in a given time
+ * slot.
+ *
+ * Returns: QDF_STATUS_SUCCESS if all the tasks were completed
+ *	QDF error code, if the time slot exhausted
+ */
+QDF_STATUS hif_try_complete_tasks(struct hif_softc *scn);
 
 #ifdef QCA_NSS_WIFI_OFFLOAD_SUPPORT
 static inline bool hif_is_nss_wifi_enabled(struct hif_softc *sc)
@@ -225,6 +262,19 @@ static inline uint8_t hif_is_attribute_set(struct hif_softc *sc,
 {
 	return sc->hif_attribute == hif_attrib;
 }
+
+#ifdef WLAN_FEATURE_DP_EVENT_HISTORY
+static inline void hif_set_event_hist_mask(struct hif_opaque_softc *hif_handle)
+{
+	struct hif_softc *scn = (struct hif_softc *)hif_handle;
+
+	scn->event_disable_mask = HIF_EVENT_HIST_DISABLE_MASK;
+}
+#else
+static inline void hif_set_event_hist_mask(struct hif_opaque_softc *hif_handle)
+{
+}
+#endif /* WLAN_FEATURE_DP_EVENT_HISTORY */
 
 A_target_id_t hif_get_target_id(struct hif_softc *scn);
 void hif_dump_pipe_debug_count(struct hif_softc *scn);
@@ -268,6 +318,15 @@ bool hif_is_driver_unloading(struct hif_softc *scn);
 bool hif_is_load_or_unload_in_progress(struct hif_softc *scn);
 bool hif_is_recovery_in_progress(struct hif_softc *scn);
 bool hif_is_target_ready(struct hif_softc *scn);
+
+/**
+ * hif_get_bandwidth_level() - API to get the current bandwidth level
+ * @scn: HIF Context
+ *
+ * Return: PLD bandwidth level
+ */
+int hif_get_bandwidth_level(struct hif_opaque_softc *hif_handle);
+
 void hif_wlan_disable(struct hif_softc *scn);
 int hif_target_sleep_state_adjust(struct hif_softc *scn,
 					 bool sleep_ok,

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2020 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -24,12 +24,7 @@
 #if !defined(__QDF_TYPES_H)
 #define __QDF_TYPES_H
 
-#ifndef CONFIG_MCL
-#if !defined(__printf)
-#define __printf(a, b)
-#endif
-#endif
-
+#define qdf_must_check __qdf_must_check
 
 /* Include Files */
 #include <i_qdf_types.h>
@@ -37,9 +32,13 @@
 #ifdef TSOSEG_DEBUG
 #include <qdf_atomic.h>
 #endif
+#include "qdf_status.h"
 
 /* Preprocessor definitions and constants */
 #define QDF_MAX_SGLIST 4
+
+#define CPU_CLUSTER_TYPE_LITTLE 0
+#define CPU_CLUSTER_TYPE_PERF 1
 
 /**
  * struct qdf_sglist - scatter-gather list
@@ -156,6 +155,11 @@ typedef __qdf_mem_info_t qdf_mem_info_t;
 typedef __sgtable_t sgtable_t;
 
 /**
+ * typepdef qdf_cpu_mask - CPU Mask
+ */
+typedef __qdf_cpu_mask qdf_cpu_mask;
+
+/**
  * pointer to net device
  */
 typedef __qdf_netdev_t qdf_netdev_t;
@@ -267,6 +271,7 @@ typedef bool (*qdf_irqlocked_func_t)(void *);
 
 /**
  * typedef enum QDF_MODULE_ID  - Debug category level
+ * @QDF_MODULE_ID_MIN: The smallest/starting module id
  * @QDF_MODULE_ID_TDLS: TDLS
  * @QDF_MODULE_ID_ACS: auto channel selection
  * @QDF_MODULE_ID_SCAN_SM: scan state machine
@@ -329,6 +334,7 @@ typedef bool (*qdf_irqlocked_func_t)(void *);
  * @QDF_MODULE_ID_EPPING: EPPING module ID
  * @QDF_MODULE_ID_QVIT: QVIT module ID
  * @QDF_MODULE_ID_DP: Data-path module ID
+ * @QDF_MODULE_ID_HAL: Hal abstraction module ID
  * @QDF_MODULE_ID_SOC: SOC module ID
  * @QDF_MODULE_ID_OS_IF: OS-interface module ID
  * @QDF_MODULE_ID_TARGET_IF: targer interface module ID
@@ -355,11 +361,21 @@ typedef bool (*qdf_irqlocked_func_t)(void *);
  * @QDF_MODULE_ID_CP_STATS: Control Plane Statistics ID
  * @QDF_MODULE_ID_ACTION_OUI: ACTION OUI module ID
  * @QDF_MODULE_ID_TARGET: Target module ID
+ * @QDF_MODULE_ID_MBSSIE: MBSS IE ID
+ * @QDF_MODULE_ID_FWOL: FW Offload module ID
+ * @QDF_MODULE_ID_SM_ENGINE: SM engine module ID
+ * @QDF_MODULE_ID_CMN_MLME: CMN MLME module ID
+ * @QDF_MODULE_ID_CFR: CFR module ID
+ * @QDF_MODULE_ID_TX_CAPTURE: Tx capture enhancement feature ID
+ * @QDF_MODULE_ID_INTEROP_ISSUES_AP: interop issues ap module ID
+ * @QDF_MODULE_ID_BLACKLIST_MGR: Blacklist Manager module
+ * @QDF_MODULE_ID_PKT_CAPTURE: PACKET CAPTURE module ID
  * @QDF_MODULE_ID_ANY: anything
  * @QDF_MODULE_ID_MAX: Max place holder module ID
  */
 typedef enum {
-	QDF_MODULE_ID_TDLS      = 0,
+	QDF_MODULE_ID_MIN       = 0,
+	QDF_MODULE_ID_TDLS      = QDF_MODULE_ID_MIN,
 	QDF_MODULE_ID_ACS,
 	QDF_MODULE_ID_SCAN_SM,
 	QDF_MODULE_ID_SCANENTRY,
@@ -429,6 +445,7 @@ typedef enum {
 	QDF_MODULE_ID_EPPING,
 	QDF_MODULE_ID_QVIT,
 	QDF_MODULE_ID_DP,
+	QDF_MODULE_ID_HAL,
 	QDF_MODULE_ID_SOC,
 	QDF_MODULE_ID_OS_IF,
 	QDF_MODULE_ID_TARGET_IF,
@@ -460,6 +477,16 @@ typedef enum {
 	QDF_MODULE_ID_CP_STATS,
 	QDF_MODULE_ID_ACTION_OUI,
 	QDF_MODULE_ID_TARGET,
+	QDF_MODULE_ID_MBSSIE,
+	QDF_MODULE_ID_FWOL,
+	QDF_MODULE_ID_SM_ENGINE,
+	QDF_MODULE_ID_CMN_MLME,
+	QDF_MODULE_ID_BSSCOLOR,
+	QDF_MODULE_ID_CFR,
+	QDF_MODULE_ID_TX_CAPTURE,
+	QDF_MODULE_ID_INTEROP_ISSUES_AP,
+	QDF_MODULE_ID_BLACKLIST_MGR,
+	QDF_MODULE_ID_PKT_CAPTURE,
 	QDF_MODULE_ID_ANY,
 	QDF_MODULE_ID_MAX,
 } QDF_MODULE_ID;
@@ -520,7 +547,8 @@ typedef enum {
  * @QDF_WDS_MODE: WDS mode
  * @QDF_BTAMP_MODE: BTAMP mode
  * @QDF_AHDEMO_MODE: AHDEMO mode
- * @QDF_TDLS_MODE: TDLS MODE
+ * @QDF_TDLS_MODE: TDLS device mode
+ * @QDF_NAN_DISC_MODE: NAN Discovery device mode
  * @QDF_MAX_NO_OF_MODE: Max place holder
  *
  * These are generic IDs that identify the various roles
@@ -542,9 +570,21 @@ enum QDF_OPMODE {
 	QDF_WDS_MODE,
 	QDF_BTAMP_MODE,
 	QDF_AHDEMO_MODE,
-	QDF_MAX_NO_OF_MODE,
 	QDF_TDLS_MODE,
+	QDF_NAN_DISC_MODE,
+
+	/* Add new OP Modes to qdf_opmode_str as well */
+
+	QDF_MAX_NO_OF_MODE
 };
+
+/**
+ * qdf_opmode_str() - Return a human readable string representation of @opmode
+ * @opmode: The opmode to convert
+ *
+ * Return: string representation of @opmode
+ */
+const char *qdf_opmode_str(const enum QDF_OPMODE opmode);
 
 /**
  * enum QDF_GLOBAL_MODE - global mode when driver is loaded.
@@ -559,6 +599,7 @@ enum QDF_OPMODE {
  */
 enum QDF_GLOBAL_MODE {
 	QDF_GLOBAL_MISSION_MODE,
+	QDF_GLOBAL_WALTEST_MODE = 3,
 	QDF_GLOBAL_MONITOR_MODE = 4,
 	QDF_GLOBAL_FTM_MODE = 5,
 	QDF_GLOBAL_IBSS_MODE = 6,
@@ -570,59 +611,34 @@ enum QDF_GLOBAL_MODE {
 
 #define  QDF_IS_EPPING_ENABLED(mode) (mode == QDF_GLOBAL_EPPING_MODE)
 
-/**
- * qdf_trace_msg()- logging API
- * @module: Module identifier. A member of the QDF_MODULE_ID enumeration that
- *	    identifies the module issuing the trace message.
- * @level: Trace level. A member of the QDF_TRACE_LEVEL enumeration indicating
- *	   the severity of the condition causing the trace message to be issued.
- *	   More severe conditions are more likely to be logged.
- * @str_format: Format string. The message to be logged. This format string
- *	       contains printf-like replacement parameters, which follow this
- *	       parameter in the variable argument list.
- *
- * Users wishing to add tracing information to their code should use
- * QDF_TRACE.  QDF_TRACE() will compile into a call to qdf_trace_msg() when
- * tracing is enabled.
- *
- * Return: nothing
- *
- * implemented in qdf_trace.c
- */
-void __printf(3, 4) qdf_trace_msg(QDF_MODULE_ID module, QDF_TRACE_LEVEL level,
-		   char *str_format, ...);
-/**
- * qdf_vtrace_msg() - the va_list version of qdf_trace_msg
- * @module: the calling module's Id
- * @level: the logging level to log using
- * @str_format: the log format string
- * @val: the va_list containing the values to format according to str_format
- *
- * Return: None
- */
-void qdf_vtrace_msg(QDF_MODULE_ID module, QDF_TRACE_LEVEL level,
-		    char *str_format, va_list val);
+#ifdef QDF_TRACE_PRINT_ENABLE
+#define qdf_print(args...) QDF_TRACE_INFO(QDF_MODULE_ID_ANY, ## args)
+#define qdf_alert(args...) QDF_TRACE_FATAL(QDF_MODULE_ID_ANY, ## args)
+#define qdf_err(args...)   QDF_TRACE_ERROR(QDF_MODULE_ID_ANY, ## args)
+#define qdf_warn(args...)  QDF_TRACE_WARN(QDF_MODULE_ID_ANY, ## args)
+#define qdf_info(args...)  QDF_TRACE_INFO(QDF_MODULE_ID_ANY, ## args)
+#define qdf_debug(args...) QDF_TRACE_DEBUG(QDF_MODULE_ID_ANY, ## args)
 
-#ifdef CONFIG_MCL
-#define qdf_print(args...) \
-	QDF_TRACE(QDF_MODULE_ID_QDF, QDF_TRACE_LEVEL_ERROR, ## args)
+#define qdf_nofl_print(params...) \
+	QDF_TRACE_INFO_NO_FL(QDF_MODULE_ID_ANY, ## params)
+#define qdf_nofl_alert(params...) \
+	QDF_TRACE_FATAL_NO_FL(QDF_MODULE_ID_ANY, ## params)
+#define qdf_nofl_err(params...) \
+	QDF_TRACE_ERROR_NO_FL(QDF_MODULE_ID_ANY, ## params)
+#define qdf_nofl_warn(params...) \
+	QDF_TRACE_WARN_NO_FL(QDF_MODULE_ID_ANY, ## params)
+#define qdf_nofl_info(params...) \
+	QDF_TRACE_INFO_NO_FL(QDF_MODULE_ID_ANY, ## params)
+#define qdf_nofl_debug(params...) \
+	QDF_TRACE_DEBUG_NO_FL(QDF_MODULE_ID_ANY, ## params)
 
+#else /* QDF_TRACE_PRINT_ENABLE */
+#define qdf_print(params...) QDF_TRACE_ERROR(QDF_MODULE_ID_QDF, ## params)
 #define qdf_alert(params...) QDF_TRACE_FATAL(QDF_MODULE_ID_QDF, ## params)
 #define qdf_err(params...) QDF_TRACE_ERROR(QDF_MODULE_ID_QDF, ## params)
 #define qdf_warn(params...) QDF_TRACE_WARN(QDF_MODULE_ID_QDF, ## params)
 #define qdf_info(params...) QDF_TRACE_INFO(QDF_MODULE_ID_QDF, ## params)
 #define qdf_debug(params...) QDF_TRACE_DEBUG(QDF_MODULE_ID_QDF, ## params)
-
-#else /* CONFIG_MCL */
-
-#define qdf_print printk
-#define qdf_alert printk
-#define qdf_err printk
-#define qdf_warn printk
-#define qdf_info printk
-#define qdf_debug printk
-
-#endif /* CONFIG_MCL */
 
 #define qdf_nofl_alert(params...) \
 	QDF_TRACE_FATAL_NO_FL(QDF_MODULE_ID_QDF, ## params)
@@ -634,6 +650,8 @@ void qdf_vtrace_msg(QDF_MODULE_ID module, QDF_TRACE_LEVEL level,
 	QDF_TRACE_INFO_NO_FL(QDF_MODULE_ID_QDF, ## params)
 #define qdf_nofl_debug(params...) \
 	QDF_TRACE_DEBUG_NO_FL(QDF_MODULE_ID_QDF, ## params)
+
+#endif /* QDF_TRACE_PRINT_ENABLE */
 
 #define qdf_rl_alert(params...) QDF_TRACE_FATAL_RL(QDF_MODULE_ID_QDF, ## params)
 #define qdf_rl_err(params...) QDF_TRACE_ERROR_RL(QDF_MODULE_ID_QDF, ## params)
@@ -656,26 +674,26 @@ void qdf_vtrace_msg(QDF_MODULE_ID module, QDF_TRACE_LEVEL level,
 #define qdf_snprint   __qdf_snprint
 
 #define qdf_kstrtoint __qdf_kstrtoint
+#define qdf_kstrtouint __qdf_kstrtouint
 
 #ifdef WLAN_OPEN_P2P_INTERFACE
 /* This should match with WLAN_MAX_INTERFACES */
-#define QDF_MAX_CONCURRENCY_PERSONA  (4)
+#define QDF_MAX_CONCURRENCY_PERSONA  (WLAN_MAX_VDEVS)
 #else
-#define QDF_MAX_CONCURRENCY_PERSONA  (3)
+#define QDF_MAX_CONCURRENCY_PERSONA  (WLAN_MAX_VDEVS - 1)
 #endif
 
 #define QDF_STA_MASK (1 << QDF_STA_MODE)
 #define QDF_SAP_MASK (1 << QDF_SAP_MODE)
 #define QDF_P2P_CLIENT_MASK (1 << QDF_P2P_CLIENT_MODE)
 #define QDF_P2P_GO_MASK (1 << QDF_P2P_GO_MODE)
+#define QDF_MONITOR_MASK (1 << QDF_MONITOR_MODE)
 
 #ifdef FEATURE_WLAN_MCC_TO_SCC_SWITCH
 
 /**
  * typedef tQDF_MCC_TO_SCC_SWITCH_MODE - MCC to SCC switch mode.
  * @QDF_MCC_TO_SCC_SWITCH_DISABLE: Disable switch
- * @QDF_MCC_TO_SCC_SWITCH_ENABLE: Enable switch
- * @QDF_MCC_TO_SCC_SWITCH_FORCE: Force switch with SAP restart
  * @QDF_MCC_TO_SCC_SWITCH_FORCE_WITHOUT_DISCONNECTION: Force switch without
  * restart of SAP
  * @QDF_MCC_TO_SCC_SWITCH_WITH_FAVORITE_CHANNEL: Switch using fav channel(s)
@@ -692,9 +710,7 @@ void qdf_vtrace_msg(QDF_MODULE_ID module, QDF_TRACE_LEVEL level,
  */
 typedef enum {
 	QDF_MCC_TO_SCC_SWITCH_DISABLE = 0,
-	QDF_MCC_TO_SCC_SWITCH_ENABLE,
-	QDF_MCC_TO_SCC_SWITCH_FORCE,
-	QDF_MCC_TO_SCC_SWITCH_FORCE_WITHOUT_DISCONNECTION,
+	QDF_MCC_TO_SCC_SWITCH_FORCE_WITHOUT_DISCONNECTION = 3,
 	QDF_MCC_TO_SCC_SWITCH_WITH_FAVORITE_CHANNEL,
 	QDF_MCC_TO_SCC_SWITCH_FORCE_PREFERRED_WITHOUT_DISCONNECTION,
 	QDF_MCC_TO_SCC_WITH_PREFERRED_BAND,
@@ -786,6 +802,84 @@ QDF_STATUS qdf_uint64_parse(const char *int_str, uint64_t *out_int);
  */
 struct qdf_mac_addr {
 	uint8_t bytes[QDF_MAC_ADDR_SIZE];
+};
+
+/**
+ * enum qdf_proto_subtype - subtype of packet
+ * @QDF_PROTO_EAPOL_M1 - EAPOL 1/4
+ * @QDF_PROTO_EAPOL_M2 - EAPOL 2/4
+ * @QDF_PROTO_EAPOL_M3 - EAPOL 3/4
+ * @QDF_PROTO_EAPOL_M4 - EAPOL 4/4
+ * @QDF_PROTO_DHCP_DISCOVER - discover
+ * @QDF_PROTO_DHCP_REQUEST - request
+ * @QDF_PROTO_DHCP_OFFER - offer
+ * @QDF_PROTO_DHCP_ACK - ACK
+ * @QDF_PROTO_DHCP_NACK - NACK
+ * @QDF_PROTO_DHCP_RELEASE - release
+ * @QDF_PROTO_DHCP_INFORM - inform
+ * @QDF_PROTO_DHCP_DECLINE - decline
+ * @QDF_PROTO_ARP_REQ - arp request
+ * @QDF_PROTO_ARP_RES - arp response
+ * @QDF_PROTO_ICMP_REQ - icmp request
+ * @QDF_PROTO_ICMP_RES - icmp response
+ * @QDF_PROTO_ICMPV6_REQ - icmpv6 request
+ * @QDF_PROTO_ICMPV6_RES - icmpv6 response
+ * @QDF_PROTO_ICMPV6_RS - icmpv6 rs packet
+ * @QDF_PROTO_ICMPV6_RA - icmpv6 ra packet
+ * @QDF_PROTO_ICMPV6_NS - icmpv6 ns packet
+ * @QDF_PROTO_ICMPV6_NA - icmpv6 na packet
+ * @QDF_PROTO_IPV4_UDP - ipv4 udp
+ * @QDF_PROTO_IPV4_TCP - ipv4 tcp
+ * @QDF_PROTO_IPV6_UDP - ipv6 udp
+ * @QDF_PROTO_IPV6_TCP - ipv6 tcp
+ * @QDF_PROTO_MGMT_ASSOC -assoc
+ * @QDF_PROTO_MGMT_DISASSOC - disassoc
+ * @QDF_PROTO_MGMT_AUTH - auth
+ * @QDF_PROTO_MGMT_DEAUTH - deauth
+ * @QDF_ROAM_SYNCH - roam synch indication from fw
+ * @QDF_ROAM_COMPLETE - roam complete cmd to fw
+ * @QDF_ROAM_EVENTID - roam eventid from fw
+ * @QDF_PROTO_DNS_QUERY - dns query
+ * @QDF_PROTO_DNS_RES -dns response
+ */
+enum qdf_proto_subtype {
+	QDF_PROTO_INVALID,
+	QDF_PROTO_EAPOL_M1,
+	QDF_PROTO_EAPOL_M2,
+	QDF_PROTO_EAPOL_M3,
+	QDF_PROTO_EAPOL_M4,
+	QDF_PROTO_DHCP_DISCOVER,
+	QDF_PROTO_DHCP_REQUEST,
+	QDF_PROTO_DHCP_OFFER,
+	QDF_PROTO_DHCP_ACK,
+	QDF_PROTO_DHCP_NACK,
+	QDF_PROTO_DHCP_RELEASE,
+	QDF_PROTO_DHCP_INFORM,
+	QDF_PROTO_DHCP_DECLINE,
+	QDF_PROTO_ARP_REQ,
+	QDF_PROTO_ARP_RES,
+	QDF_PROTO_ICMP_REQ,
+	QDF_PROTO_ICMP_RES,
+	QDF_PROTO_ICMPV6_REQ,
+	QDF_PROTO_ICMPV6_RES,
+	QDF_PROTO_ICMPV6_RS,
+	QDF_PROTO_ICMPV6_RA,
+	QDF_PROTO_ICMPV6_NS,
+	QDF_PROTO_ICMPV6_NA,
+	QDF_PROTO_IPV4_UDP,
+	QDF_PROTO_IPV4_TCP,
+	QDF_PROTO_IPV6_UDP,
+	QDF_PROTO_IPV6_TCP,
+	QDF_PROTO_MGMT_ASSOC,
+	QDF_PROTO_MGMT_DISASSOC,
+	QDF_PROTO_MGMT_AUTH,
+	QDF_PROTO_MGMT_DEAUTH,
+	QDF_ROAM_SYNCH,
+	QDF_ROAM_COMPLETE,
+	QDF_ROAM_EVENTID,
+	QDF_PROTO_DNS_QUERY,
+	QDF_PROTO_DNS_RES,
+	QDF_PROTO_SUBTYPE_MAX
 };
 
 /**
@@ -884,6 +978,37 @@ struct qdf_ipv6_addr {
  * Return: QDF_STATUS
  */
 QDF_STATUS qdf_ipv6_parse(const char *ipv6_str, struct qdf_ipv6_addr *out_addr);
+
+/**
+ * qdf_uint16_array_parse() - parse the given string as uint16 array
+ * @in_str: the input string to parse
+ * @out_array: the output uint16 array, populated on success
+ * @array_size: size of the array
+ * @out_size: size of the populated array
+ *
+ * This API is called to convert string (each value separated by
+ * a comma) into an uint16 array
+ *
+ * Return: QDF_STATUS
+ */
+
+QDF_STATUS qdf_uint16_array_parse(const char *in_str, uint16_t *out_array,
+				  qdf_size_t array_size, qdf_size_t *out_size);
+
+/**
+ * qdf_uint8_array_parse() - parse the given string as uint8 array
+ * @in_str: the input string to parse
+ * @out_array: the output uint8 array, populated on success
+ * @array_size: size of the array
+ * @out_size: size of the populated array
+ *
+ * This API is called to convert string (each byte separated by
+ * a comma) into an u8 array
+ *
+ * Return: QDF_STATUS
+ */
+QDF_STATUS qdf_uint8_array_parse(const char *in_str, uint8_t *out_array,
+				 qdf_size_t array_size, qdf_size_t *out_size);
 
 #define QDF_MAX_NUM_CHAN   (128)
 
@@ -1020,16 +1145,16 @@ struct qdf_tso_seg_dbg_t {
 
 /**
  * qdf_tso_seg_elem_t - tso segment element
- * @seg: instance of segment
  * @next: pointer to the next segment
+ * @seg: instance of segment
  */
 struct qdf_tso_seg_elem_t {
+	struct qdf_tso_seg_elem_t *next;
 	struct qdf_tso_seg_t seg;
 	uint32_t cookie:13,
 		on_freelist:1,
 		sent_to_target:1,
 		force_free:1;
-	struct qdf_tso_seg_elem_t *next;
 #ifdef TSOSEG_DEBUG
 	struct qdf_tso_seg_dbg_t dbg;
 #endif /* TSOSEG_DEBUG */
@@ -1048,12 +1173,12 @@ struct qdf_tso_num_seg_t {
 
 /**
  * qdf_tso_num_seg_elem_t - num of tso segment element for jumbo skb
- * @num_seg: instance of num of seg
  * @next: pointer to the next segment
+ * @num_seg: instance of num of seg
  */
 struct qdf_tso_num_seg_elem_t {
-	struct qdf_tso_num_seg_t num_seg;
 	struct qdf_tso_num_seg_elem_t *next;
+	struct qdf_tso_num_seg_t num_seg;
 };
 
 /**
@@ -1111,16 +1236,17 @@ enum qdf_suspend_type {
 
 /**
  * enum qdf_hang_reason - host hang/ssr reason
- * @CDS_REASON_UNSPECIFIED: Unspecified reason
- * @CDS_RX_HASH_NO_ENTRY_FOUND: No Map for the MAC entry for the received frame
- * @CDS_PEER_DELETION_TIMEDOUT: peer deletion timeout happened
- * @CDS_PEER_UNMAP_TIMEDOUT: peer unmap timeout
- * @CDS_SCAN_REQ_EXPIRED: Scan request timed out
- * @CDS_SCAN_ATTEMPT_FAILURES: Consecutive Scan attempt failures
- * @CDS_GET_MSG_BUFF_FAILURE: Unable to get the message buffer
- * @CDS_ACTIVE_LIST_TIMEOUT: Current command processing is timedout
- * @CDS_SUSPEND_TIMEOUT: Timeout for an ACK from FW for suspend request
- * @CDS_RESUME_TIMEOUT: Timeout for an ACK from FW for resume request
+ * @QDF_REASON_UNSPECIFIED: Unspecified reason
+ * @QDF_RX_HASH_NO_ENTRY_FOUND: No Map for the MAC entry for the received frame
+ * @QDF_PEER_DELETION_TIMEDOUT: peer deletion timeout happened
+ * @QDF_PEER_UNMAP_TIMEDOUT: peer unmap timeout
+ * @QDF_SCAN_REQ_EXPIRED: Scan request timed out
+ * @QDF_SCAN_ATTEMPT_FAILURES: Consecutive Scan attempt failures
+ * @QDF_GET_MSG_BUFF_FAILURE: Unable to get the message buffer
+ * @QDF_ACTIVE_LIST_TIMEOUT: Current command processing is timedout
+ * @QDF_SUSPEND_TIMEOUT: Timeout for an ACK from FW for suspend request
+ * @QDF_RESUME_TIMEOUT: Timeout for an ACK from FW for resume request
+ * @QDF_WMI_EXCEED_MAX_PENDING_CMDS: wmi exceed max pending cmd
  */
 enum qdf_hang_reason {
 	QDF_REASON_UNSPECIFIED = 0,
@@ -1133,6 +1259,7 @@ enum qdf_hang_reason {
 	QDF_ACTIVE_LIST_TIMEOUT = 7,
 	QDF_SUSPEND_TIMEOUT = 8,
 	QDF_RESUME_TIMEOUT = 9,
+	QDF_WMI_EXCEED_MAX_PENDING_CMDS = 10,
 };
 
 /**
@@ -1189,6 +1316,22 @@ enum qdf_hrtimer_restart_status {
 enum qdf_context_mode {
 	QDF_CONTEXT_HARDWARE = 0,
 	QDF_CONTEXT_TASKLET = 1,
+};
+
+/**
+ * enum qdf_dp_tx_rx_status - TX/RX packet status
+ * @QDF_TX_RX_STATUS_INVALID: default invalid status
+ * @QDF_TX_RX_STATUS_OK: successfully sent + acked
+ * @QDF_TX_RX_STATUS_FW_DISCARD: packet not sent
+ * @QDF_TX_RX_STATUS_NO_ACK: packet sent but no ack
+ * @QDF_TX_RX_STATUS_DROP: packet dropped in host
+ */
+enum qdf_dp_tx_rx_status {
+	QDF_TX_RX_STATUS_INVALID,
+	QDF_TX_RX_STATUS_OK,
+	QDF_TX_RX_STATUS_FW_DISCARD,
+	QDF_TX_RX_STATUS_NO_ACK,
+	QDF_TX_RX_STATUS_DROP,
 };
 
 #endif /* __QDF_TYPES_H */

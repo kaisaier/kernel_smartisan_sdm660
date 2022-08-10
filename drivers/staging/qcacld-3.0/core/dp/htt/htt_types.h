@@ -245,6 +245,15 @@ struct htt_pdev_t {
 		int default_tx_comp_req;
 		int ce_classify_enabled;
 		uint8_t is_first_wakeup_packet;
+		/*
+		 * To track if credit reporting through
+		 * HTT_T2H_MSG_TYPE_TX_CREDIT_UPDATE_IND is enabled/disabled.
+		 * In Genoa(QCN7605) credits are reported through
+		 * HTT_T2H_MSG_TYPE_TX_CREDIT_UPDATE_IND only.
+		 */
+		u8 credit_update_enabled;
+		/* Explicitly request TX completions. */
+		u8 request_tx_comp;
 	} cfg;
 	struct {
 		uint8_t major;
@@ -441,6 +450,8 @@ struct htt_pdev_t {
 
 	struct mon_channel mon_ch_info;
 
+	struct htt_htc_pkt_union *last_misc_pkt;
+	int last_misc_num;
 	/* Flag to indicate whether new htt format is supported */
 	bool new_htt_format_enabled;
 };

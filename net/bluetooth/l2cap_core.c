@@ -32,6 +32,7 @@
 
 #include <linux/debugfs.h>
 #include <linux/crc16.h>
+#include <linux/filter.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
@@ -197,10 +198,20 @@ int l2cap_add_psm(struct l2cap_chan *chan, bdaddr_t *src, __le16 psm)
 		chan->sport = psm;
 		err = 0;
 	} else {
-		u16 p;
+		u16 p, start, end, incr;
+
+		if (chan->src_type == BDADDR_BREDR) {
+			start = L2CAP_PSM_DYN_START;
+			end = L2CAP_PSM_AUTO_END;
+			incr = 2;
+		} else {
+			start = L2CAP_PSM_LE_DYN_START;
+			end = L2CAP_PSM_LE_DYN_END;
+			incr = 1;
+		}
 
 		err = -EINVAL;
-		for (p = 0x1001; p < 0x1100; p += 2)
+		for (p = start; p <= end; p += incr)
 			if (!__l2cap_global_chan_by_addr(cpu_to_le16(p), src)) {
 				chan->psm   = cpu_to_le16(p);
 				chan->sport = cpu_to_le16(p);
@@ -249,7 +260,7 @@ static u16 l2cap_alloc_cid(struct l2cap_conn *conn)
 
 static void l2cap_state_change(struct l2cap_chan *chan, int state)
 {
-	BT_DBG("chan %pK %s -> %s", chan, state_to_string(chan->state),
+	BT_DBG("chan %p %s -> %s", chan, state_to_string(chan->state),
 	       state_to_string(state));
 
 	chan->state = state;
@@ -320,7 +331,7 @@ static int l2cap_seq_list_init(struct l2cap_seq_list *seq_list, u16 size)
 	 */
 	alloc_size = roundup_pow_of_two(size);
 
-	seq_list->list = kmalloc(sizeof(u16) * alloc_size, GFP_KERNEL);
+	seq_list->list = kmalloc_array(alloc_size, sizeof(u16), GFP_KERNEL);
 	if (!seq_list->list)
 		return -ENOMEM;
 
@@ -400,9 +411,12 @@ static void l2cap_chan_timeout(struct work_struct *work)
 	struct l2cap_conn *conn = chan->conn;
 	int reason;
 
-	BT_DBG("chan %pK state %s", chan, state_to_string(chan->state));
+	BT_DBG("chan %p state %s", chan, state_to_string(chan->state));
 
 	mutex_lock(&conn->chan_lock);
+	/* __set_chan_timer() calls l2cap_chan_hold(chan) while scheduling
+	 * this work. No need to call l2cap_chan_hold(chan) here again.
+	 */
 	l2cap_chan_lock(chan);
 
 	if (chan->state == BT_CONNECTED || chan->state == BT_CONFIG)
@@ -415,12 +429,12 @@ static void l2cap_chan_timeout(struct work_struct *work)
 
 	l2cap_chan_close(chan, reason);
 
-	l2cap_chan_unlock(chan);
-
 	chan->ops->close(chan);
-	mutex_unlock(&conn->chan_lock);
 
+	l2cap_chan_unlock(chan);
 	l2cap_chan_put(chan);
+
+	mutex_unlock(&conn->chan_lock);
 }
 
 struct l2cap_chan *l2cap_chan_create(void)
@@ -431,6 +445,8 @@ struct l2cap_chan *l2cap_chan_create(void)
 	if (!chan)
 		return NULL;
 
+	skb_queue_head_init(&chan->tx_q);
+	skb_queue_head_init(&chan->srej_q);
 	mutex_init(&chan->lock);
 
 	/* Set default lock nesting level */
@@ -449,7 +465,7 @@ struct l2cap_chan *l2cap_chan_create(void)
 	/* This flag is cleared in l2cap_chan_ready() */
 	set_bit(CONF_NOT_COMPLETE, &chan->conf_state);
 
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	return chan;
 }
@@ -459,7 +475,7 @@ static void l2cap_chan_destroy(struct kref *kref)
 {
 	struct l2cap_chan *chan = container_of(kref, struct l2cap_chan, kref);
 
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	write_lock(&chan_list_lock);
 	list_del(&chan->global_l);
@@ -470,14 +486,14 @@ static void l2cap_chan_destroy(struct kref *kref)
 
 void l2cap_chan_hold(struct l2cap_chan *c)
 {
-	BT_DBG("chan %pK orig refcnt %d", c, atomic_read(&c->kref.refcount));
+	BT_DBG("chan %p orig refcnt %d", c, kref_read(&c->kref));
 
 	kref_get(&c->kref);
 }
 
 void l2cap_chan_put(struct l2cap_chan *c)
 {
-	BT_DBG("chan %pK orig refcnt %d", c, atomic_read(&c->kref.refcount));
+	BT_DBG("chan %p orig refcnt %d", c, kref_read(&c->kref));
 
 	kref_put(&c->kref, l2cap_chan_destroy);
 }
@@ -496,7 +512,9 @@ void l2cap_chan_set_defaults(struct l2cap_chan *chan)
 	chan->flush_to = L2CAP_DEFAULT_FLUSH_TO;
 	chan->retrans_timeout = L2CAP_DEFAULT_RETRANS_TO;
 	chan->monitor_timeout = L2CAP_DEFAULT_MONITOR_TO;
+
 	chan->conf_state = 0;
+	set_bit(CONF_NOT_COMPLETE, &chan->conf_state);
 
 	set_bit(FLAG_FORCE_ACTIVE, &chan->flags);
 }
@@ -516,7 +534,7 @@ static void l2cap_le_flowctl_init(struct l2cap_chan *chan)
 
 void __l2cap_chan_add(struct l2cap_conn *conn, struct l2cap_chan *chan)
 {
-	BT_DBG("conn %pK, psm 0x%2.2x, dcid 0x%4.4x", conn,
+	BT_DBG("conn %p, psm 0x%2.2x, dcid 0x%4.4x", conn,
 	       __le16_to_cpu(chan->psm), chan->dcid);
 
 	conn->disc_reason = HCI_ERROR_REMOTE_USER_TERM;
@@ -579,7 +597,7 @@ void l2cap_chan_del(struct l2cap_chan *chan, int err)
 
 	__clear_chan_timer(chan);
 
-	BT_DBG("chan %pK, conn %pK, err %d, state %s", chan, conn, err,
+	BT_DBG("chan %p, conn %p, err %d, state %s", chan, conn, err,
 	       state_to_string(chan->state));
 
 	chan->ops->teardown(chan, err);
@@ -608,7 +626,7 @@ void l2cap_chan_del(struct l2cap_chan *chan, int err)
 	if (chan->hs_hchan) {
 		struct hci_chan *hs_hchan = chan->hs_hchan;
 
-		BT_DBG("chan %pK disconnect hs_hchan %pK", chan, hs_hchan);
+		BT_DBG("chan %p disconnect hs_hchan %p", chan, hs_hchan);
 		amp_disconnect_logical_link(hs_hchan);
 	}
 
@@ -711,7 +729,7 @@ void l2cap_chan_close(struct l2cap_chan *chan, int reason)
 {
 	struct l2cap_conn *conn = chan->conn;
 
-	BT_DBG("chan %pK state %s", chan, state_to_string(chan->state));
+	BT_DBG("chan %p state %s", chan, state_to_string(chan->state));
 
 	switch (chan->state) {
 	case BT_LISTEN:
@@ -874,7 +892,7 @@ static void l2cap_do_send(struct l2cap_chan *chan, struct sk_buff *skb)
 	struct hci_conn *hcon = chan->conn->hcon;
 	u16 flags;
 
-	BT_DBG("chan %pK, skb %pK len %d priority %u", chan, skb, skb->len,
+	BT_DBG("chan %p, skb %p len %d priority %u", chan, skb, skb->len,
 	       skb->priority);
 
 	if (chan->hs_hcon && !__chan_is_moving(chan)) {
@@ -1037,7 +1055,7 @@ static struct sk_buff *l2cap_create_sframe_pdu(struct l2cap_chan *chan,
 	if (!skb)
 		return ERR_PTR(-ENOMEM);
 
-	lh = (struct l2cap_hdr *) skb_put(skb, L2CAP_HDR_SIZE);
+	lh = skb_put(skb, L2CAP_HDR_SIZE);
 	lh->len = cpu_to_le16(hlen - L2CAP_HDR_SIZE);
 	lh->cid = cpu_to_le16(chan->dcid);
 
@@ -1061,7 +1079,7 @@ static void l2cap_send_sframe(struct l2cap_chan *chan,
 	struct sk_buff *skb;
 	u32 control_field;
 
-	BT_DBG("chan %pK, control %pK", chan, control);
+	BT_DBG("chan %p, control %p", chan, control);
 
 	if (!control->sframe)
 		return;
@@ -1100,7 +1118,7 @@ static void l2cap_send_rr_or_rnr(struct l2cap_chan *chan, bool poll)
 {
 	struct l2cap_ctrl control;
 
-	BT_DBG("chan %pK, poll %d", chan, poll);
+	BT_DBG("chan %p, poll %d", chan, poll);
 
 	memset(&control, 0, sizeof(control));
 	control.sframe = 1;
@@ -1189,7 +1207,7 @@ static void l2cap_move_setup(struct l2cap_chan *chan)
 {
 	struct sk_buff *skb;
 
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	if (chan->mode != L2CAP_MODE_ERTM)
 		return;
@@ -1223,7 +1241,7 @@ static void l2cap_move_setup(struct l2cap_chan *chan)
 static void l2cap_move_done(struct l2cap_chan *chan)
 {
 	u8 move_role = chan->move_role;
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	chan->move_state = L2CAP_MOVE_STABLE;
 	chan->move_role = L2CAP_MOVE_ROLE_NONE;
@@ -1302,7 +1320,7 @@ static void l2cap_le_start(struct l2cap_chan *chan)
 static void l2cap_start_connection(struct l2cap_chan *chan)
 {
 	if (__amp_capable(chan)) {
-		BT_DBG("chan %pK AMP capable: discover AMPs", chan);
+		BT_DBG("chan %p AMP capable: discover AMPs", chan);
 		a2mp_discover_amp(chan);
 	} else if (chan->conn->hcon->type == LE_LINK) {
 		l2cap_le_start(chan);
@@ -1419,7 +1437,7 @@ static void l2cap_conn_start(struct l2cap_conn *conn)
 {
 	struct l2cap_chan *chan, *tmp;
 
-	BT_DBG("conn %pK", conn);
+	BT_DBG("conn %p", conn);
 
 	mutex_lock(&conn->chan_lock);
 
@@ -1500,7 +1518,7 @@ static void l2cap_le_conn_ready(struct l2cap_conn *conn)
 	struct hci_conn *hcon = conn->hcon;
 	struct hci_dev *hdev = hcon->hdev;
 
-	BT_DBG("%s conn %pK", hdev->name, conn);
+	BT_DBG("%s conn %p", hdev->name, conn);
 
 	/* For outgoing pairing which doesn't necessarily have an
 	 * associated socket (e.g. mgmt_pair_device).
@@ -1533,7 +1551,7 @@ static void l2cap_conn_ready(struct l2cap_conn *conn)
 	struct l2cap_chan *chan;
 	struct hci_conn *hcon = conn->hcon;
 
-	BT_DBG("conn %pK", conn);
+	BT_DBG("conn %p", conn);
 
 	if (hcon->type == ACL_LINK)
 		l2cap_request_info(conn);
@@ -1574,7 +1592,7 @@ static void l2cap_conn_unreliable(struct l2cap_conn *conn, int err)
 {
 	struct l2cap_chan *chan;
 
-	BT_DBG("conn %pK", conn);
+	BT_DBG("conn %p", conn);
 
 	mutex_lock(&conn->chan_lock);
 
@@ -1684,7 +1702,7 @@ static void l2cap_conn_del(struct hci_conn *hcon, int err)
 	if (!conn)
 		return;
 
-	BT_DBG("hcon %pK conn %pK, err %d", hcon, conn, err);
+	BT_DBG("hcon %p conn %p, err %d", hcon, conn, err);
 
 	kfree_skb(conn->rx_skb);
 
@@ -1714,9 +1732,9 @@ static void l2cap_conn_del(struct hci_conn *hcon, int err)
 
 		l2cap_chan_del(chan, err);
 
-		l2cap_chan_unlock(chan);
-
 		chan->ops->close(chan);
+
+		l2cap_chan_unlock(chan);
 		l2cap_chan_put(chan);
 	}
 
@@ -1812,7 +1830,7 @@ static void l2cap_monitor_timeout(struct work_struct *work)
 	struct l2cap_chan *chan = container_of(work, struct l2cap_chan,
 					       monitor_timer.work);
 
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	l2cap_chan_lock(chan);
 
@@ -1833,7 +1851,7 @@ static void l2cap_retrans_timeout(struct work_struct *work)
 	struct l2cap_chan *chan = container_of(work, struct l2cap_chan,
 					       retrans_timer.work);
 
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	l2cap_chan_lock(chan);
 
@@ -1854,7 +1872,7 @@ static void l2cap_streaming_send(struct l2cap_chan *chan,
 	struct sk_buff *skb;
 	struct l2cap_ctrl *control;
 
-	BT_DBG("chan %pK, skbs %pK", chan, skbs);
+	BT_DBG("chan %p, skbs %p", chan, skbs);
 
 	if (__chan_is_moving(chan))
 		return;
@@ -1893,7 +1911,7 @@ static int l2cap_ertm_send(struct l2cap_chan *chan)
 	struct l2cap_ctrl *control;
 	int sent = 0;
 
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	if (chan->state != BT_CONNECTED)
 		return -ENOTCONN;
@@ -1964,7 +1982,7 @@ static void l2cap_ertm_resend(struct l2cap_chan *chan)
 	struct sk_buff *tx_skb;
 	u16 seq;
 
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	if (test_bit(CONN_REMOTE_BUSY, &chan->conn_state))
 		return;
@@ -2041,7 +2059,7 @@ static void l2cap_ertm_resend(struct l2cap_chan *chan)
 static void l2cap_retransmit(struct l2cap_chan *chan,
 			     struct l2cap_ctrl *control)
 {
-	BT_DBG("chan %pK, control %pK", chan, control);
+	BT_DBG("chan %p, control %p", chan, control);
 
 	l2cap_seq_list_append(&chan->retrans_list, control->reqseq);
 	l2cap_ertm_resend(chan);
@@ -2052,7 +2070,7 @@ static void l2cap_retransmit_all(struct l2cap_chan *chan,
 {
 	struct sk_buff *skb;
 
-	BT_DBG("chan %pK, control %pK", chan, control);
+	BT_DBG("chan %p, control %p", chan, control);
 
 	if (control->poll)
 		set_bit(CONN_SEND_FBIT, &chan->conn_state);
@@ -2088,7 +2106,7 @@ static void l2cap_send_ack(struct l2cap_chan *chan)
 					 chan->last_acked_seq);
 	int threshold;
 
-	BT_DBG("chan %pK last_acked_seq %d buffer_seq %d",
+	BT_DBG("chan %p last_acked_seq %d buffer_seq %d",
 	       chan, chan->last_acked_seq, chan->buffer_seq);
 
 	memset(&control, 0, sizeof(control));
@@ -2139,7 +2157,7 @@ static inline int l2cap_skbuff_fromiovec(struct l2cap_chan *chan,
 	struct sk_buff **frag;
 	int sent = 0;
 
-	if (copy_from_iter(skb_put(skb, count), count, &msg->msg_iter) != count)
+	if (!copy_from_iter_full(skb_put(skb, count), count, &msg->msg_iter))
 		return -EFAULT;
 
 	sent += count;
@@ -2159,8 +2177,8 @@ static inline int l2cap_skbuff_fromiovec(struct l2cap_chan *chan,
 
 		*frag = tmp;
 
-		if (copy_from_iter(skb_put(*frag, count), count,
-				   &msg->msg_iter) != count)
+		if (!copy_from_iter_full(skb_put(*frag, count), count,
+				   &msg->msg_iter))
 			return -EFAULT;
 
 		sent += count;
@@ -2183,7 +2201,7 @@ static struct sk_buff *l2cap_create_connless_pdu(struct l2cap_chan *chan,
 	int err, count, hlen = L2CAP_HDR_SIZE + L2CAP_PSMLEN_SIZE;
 	struct l2cap_hdr *lh;
 
-	BT_DBG("chan %pK psm 0x%2.2x len %zu", chan,
+	BT_DBG("chan %p psm 0x%2.2x len %zu", chan,
 	       __le16_to_cpu(chan->psm), len);
 
 	count = min_t(unsigned int, (conn->mtu - hlen), len);
@@ -2194,7 +2212,7 @@ static struct sk_buff *l2cap_create_connless_pdu(struct l2cap_chan *chan,
 		return skb;
 
 	/* Create L2CAP header */
-	lh = (struct l2cap_hdr *) skb_put(skb, L2CAP_HDR_SIZE);
+	lh = skb_put(skb, L2CAP_HDR_SIZE);
 	lh->cid = cpu_to_le16(chan->dcid);
 	lh->len = cpu_to_le16(len + L2CAP_PSMLEN_SIZE);
 	put_unaligned(chan->psm, (__le16 *) skb_put(skb, L2CAP_PSMLEN_SIZE));
@@ -2215,7 +2233,7 @@ static struct sk_buff *l2cap_create_basic_pdu(struct l2cap_chan *chan,
 	int err, count;
 	struct l2cap_hdr *lh;
 
-	BT_DBG("chan %pK len %zu", chan, len);
+	BT_DBG("chan %p len %zu", chan, len);
 
 	count = min_t(unsigned int, (conn->mtu - L2CAP_HDR_SIZE), len);
 
@@ -2225,7 +2243,7 @@ static struct sk_buff *l2cap_create_basic_pdu(struct l2cap_chan *chan,
 		return skb;
 
 	/* Create L2CAP header */
-	lh = (struct l2cap_hdr *) skb_put(skb, L2CAP_HDR_SIZE);
+	lh = skb_put(skb, L2CAP_HDR_SIZE);
 	lh->cid = cpu_to_le16(chan->dcid);
 	lh->len = cpu_to_le16(len);
 
@@ -2246,7 +2264,7 @@ static struct sk_buff *l2cap_create_iframe_pdu(struct l2cap_chan *chan,
 	int err, count, hlen;
 	struct l2cap_hdr *lh;
 
-	BT_DBG("chan %pK len %zu", chan, len);
+	BT_DBG("chan %p len %zu", chan, len);
 
 	if (!conn)
 		return ERR_PTR(-ENOTCONN);
@@ -2267,7 +2285,7 @@ static struct sk_buff *l2cap_create_iframe_pdu(struct l2cap_chan *chan,
 		return skb;
 
 	/* Create L2CAP header */
-	lh = (struct l2cap_hdr *) skb_put(skb, L2CAP_HDR_SIZE);
+	lh = skb_put(skb, L2CAP_HDR_SIZE);
 	lh->cid = cpu_to_le16(chan->dcid);
 	lh->len = cpu_to_le16(len + (hlen - L2CAP_HDR_SIZE));
 
@@ -2300,7 +2318,7 @@ static int l2cap_segment_sdu(struct l2cap_chan *chan,
 	size_t pdu_len;
 	u8 sar;
 
-	BT_DBG("chan %pK, msg %pK, len %zu", chan, msg, len);
+	BT_DBG("chan %p, msg %p, len %zu", chan, msg, len);
 
 	/* It is critical that ERTM PDUs fit in a single HCI fragment,
 	 * so fragmented skbs are not used.  The HCI layer's handling
@@ -2367,7 +2385,7 @@ static struct sk_buff *l2cap_create_le_flowctl_pdu(struct l2cap_chan *chan,
 	int err, count, hlen;
 	struct l2cap_hdr *lh;
 
-	BT_DBG("chan %pK len %zu", chan, len);
+	BT_DBG("chan %p len %zu", chan, len);
 
 	if (!conn)
 		return ERR_PTR(-ENOTCONN);
@@ -2385,7 +2403,7 @@ static struct sk_buff *l2cap_create_le_flowctl_pdu(struct l2cap_chan *chan,
 		return skb;
 
 	/* Create L2CAP header */
-	lh = (struct l2cap_hdr *) skb_put(skb, L2CAP_HDR_SIZE);
+	lh = skb_put(skb, L2CAP_HDR_SIZE);
 	lh->cid = cpu_to_le16(chan->dcid);
 	lh->len = cpu_to_le16(len + (hlen - L2CAP_HDR_SIZE));
 
@@ -2409,7 +2427,7 @@ static int l2cap_segment_le_sdu(struct l2cap_chan *chan,
 	size_t pdu_len;
 	u16 sdu_len;
 
-	BT_DBG("chan %pK, msg %pK, len %zu", chan, msg, len);
+	BT_DBG("chan %p, msg %p, len %zu", chan, msg, len);
 
 	sdu_len = len;
 	pdu_len = chan->remote_mps - L2CAP_SDULEN_SIZE;
@@ -2435,6 +2453,22 @@ static int l2cap_segment_le_sdu(struct l2cap_chan *chan,
 	}
 
 	return 0;
+}
+
+static void l2cap_le_flowctl_send(struct l2cap_chan *chan)
+{
+	int sent = 0;
+
+	BT_DBG("chan %p", chan);
+
+	while (chan->tx_credits && !skb_queue_empty(&chan->tx_q)) {
+		l2cap_do_send(chan, skb_dequeue(&chan->tx_q));
+		chan->tx_credits--;
+		sent++;
+	}
+
+	BT_DBG("Sent %d credits %u queued %u", sent, chan->tx_credits,
+	       skb_queue_len(&chan->tx_q));
 }
 
 int l2cap_chan_send(struct l2cap_chan *chan, struct msghdr *msg, size_t len)
@@ -2470,9 +2504,6 @@ int l2cap_chan_send(struct l2cap_chan *chan, struct msghdr *msg, size_t len)
 		if (len > chan->omtu)
 			return -EMSGSIZE;
 
-		if (!chan->tx_credits)
-			return -EAGAIN;
-
 		__skb_queue_head_init(&seg_queue);
 
 		err = l2cap_segment_le_sdu(chan, &seg_queue, msg, len);
@@ -2487,10 +2518,7 @@ int l2cap_chan_send(struct l2cap_chan *chan, struct msghdr *msg, size_t len)
 
 		skb_queue_splice_tail_init(&seg_queue, &chan->tx_q);
 
-		while (chan->tx_credits && !skb_queue_empty(&chan->tx_q)) {
-			l2cap_do_send(chan, skb_dequeue(&chan->tx_q));
-			chan->tx_credits--;
-		}
+		l2cap_le_flowctl_send(chan);
 
 		if (!chan->tx_credits)
 			chan->ops->suspend(chan);
@@ -2575,7 +2603,7 @@ static void l2cap_send_srej(struct l2cap_chan *chan, u16 txseq)
 	struct l2cap_ctrl control;
 	u16 seq;
 
-	BT_DBG("chan %pK, txseq %u", chan, txseq);
+	BT_DBG("chan %p, txseq %u", chan, txseq);
 
 	memset(&control, 0, sizeof(control));
 	control.sframe = 1;
@@ -2597,7 +2625,7 @@ static void l2cap_send_srej_tail(struct l2cap_chan *chan)
 {
 	struct l2cap_ctrl control;
 
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	if (chan->srej_list.tail == L2CAP_SEQ_LIST_CLEAR)
 		return;
@@ -2615,7 +2643,7 @@ static void l2cap_send_srej_list(struct l2cap_chan *chan, u16 txseq)
 	u16 initial_head;
 	u16 seq;
 
-	BT_DBG("chan %pK, txseq %u", chan, txseq);
+	BT_DBG("chan %p, txseq %u", chan, txseq);
 
 	memset(&control, 0, sizeof(control));
 	control.sframe = 1;
@@ -2640,7 +2668,7 @@ static void l2cap_process_reqseq(struct l2cap_chan *chan, u16 reqseq)
 	struct sk_buff *acked_skb;
 	u16 ackseq;
 
-	BT_DBG("chan %pK, reqseq %u", chan, reqseq);
+	BT_DBG("chan %p, reqseq %u", chan, reqseq);
 
 	if (chan->unacked_frames == 0 || reqseq == chan->expected_ack_seq)
 		return;
@@ -2669,7 +2697,7 @@ static void l2cap_process_reqseq(struct l2cap_chan *chan, u16 reqseq)
 
 static void l2cap_abort_rx_srej_sent(struct l2cap_chan *chan)
 {
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	chan->expected_tx_seq = chan->buffer_seq;
 	l2cap_seq_list_clear(&chan->srej_list);
@@ -2681,7 +2709,7 @@ static void l2cap_tx_state_xmit(struct l2cap_chan *chan,
 				struct l2cap_ctrl *control,
 				struct sk_buff_head *skbs, u8 event)
 {
-	BT_DBG("chan %pK, control %pK, skbs %pK, event %d", chan, control, skbs,
+	BT_DBG("chan %p, control %p, skbs %p, event %d", chan, control, skbs,
 	       event);
 
 	switch (event) {
@@ -2753,7 +2781,7 @@ static void l2cap_tx_state_wait_f(struct l2cap_chan *chan,
 				  struct l2cap_ctrl *control,
 				  struct sk_buff_head *skbs, u8 event)
 {
-	BT_DBG("chan %pK, control %pK, skbs %pK, event %d", chan, control, skbs,
+	BT_DBG("chan %p, control %p, skbs %p, event %d", chan, control, skbs,
 	       event);
 
 	switch (event) {
@@ -2830,7 +2858,7 @@ static void l2cap_tx_state_wait_f(struct l2cap_chan *chan,
 static void l2cap_tx(struct l2cap_chan *chan, struct l2cap_ctrl *control,
 		     struct sk_buff_head *skbs, u8 event)
 {
-	BT_DBG("chan %pK, control %pK, skbs %pK, event %d, state %d",
+	BT_DBG("chan %p, control %p, skbs %p, event %d, state %d",
 	       chan, control, skbs, event, chan->tx_state);
 
 	switch (chan->tx_state) {
@@ -2849,14 +2877,14 @@ static void l2cap_tx(struct l2cap_chan *chan, struct l2cap_ctrl *control,
 static void l2cap_pass_to_tx(struct l2cap_chan *chan,
 			     struct l2cap_ctrl *control)
 {
-	BT_DBG("chan %pK, control %pK", chan, control);
+	BT_DBG("chan %p, control %p", chan, control);
 	l2cap_tx(chan, control, NULL, L2CAP_EV_RECV_REQSEQ_AND_FBIT);
 }
 
 static void l2cap_pass_to_tx_fbit(struct l2cap_chan *chan,
 				  struct l2cap_ctrl *control)
 {
-	BT_DBG("chan %pK, control %pK", chan, control);
+	BT_DBG("chan %p, control %p", chan, control);
 	l2cap_tx(chan, control, NULL, L2CAP_EV_RECV_FBIT);
 }
 
@@ -2866,7 +2894,7 @@ static void l2cap_raw_recv(struct l2cap_conn *conn, struct sk_buff *skb)
 	struct sk_buff *nskb;
 	struct l2cap_chan *chan;
 
-	BT_DBG("conn %pK", conn);
+	BT_DBG("conn %p", conn);
 
 	mutex_lock(&conn->chan_lock);
 
@@ -2897,7 +2925,7 @@ static struct sk_buff *l2cap_build_cmd(struct l2cap_conn *conn, u8 code,
 	struct l2cap_hdr *lh;
 	int len, count;
 
-	BT_DBG("conn %pK, code 0x%2.2x, ident 0x%2.2x, len %u",
+	BT_DBG("conn %p, code 0x%2.2x, ident 0x%2.2x, len %u",
 	       conn, code, ident, dlen);
 
 	if (conn->mtu < L2CAP_HDR_SIZE + L2CAP_CMD_HDR_SIZE)
@@ -2910,7 +2938,7 @@ static struct sk_buff *l2cap_build_cmd(struct l2cap_conn *conn, u8 code,
 	if (!skb)
 		return NULL;
 
-	lh = (struct l2cap_hdr *) skb_put(skb, L2CAP_HDR_SIZE);
+	lh = skb_put(skb, L2CAP_HDR_SIZE);
 	lh->len = cpu_to_le16(L2CAP_CMD_HDR_SIZE + dlen);
 
 	if (conn->hcon->type == LE_LINK)
@@ -2918,14 +2946,14 @@ static struct sk_buff *l2cap_build_cmd(struct l2cap_conn *conn, u8 code,
 	else
 		lh->cid = cpu_to_le16(L2CAP_CID_SIGNALING);
 
-	cmd = (struct l2cap_cmd_hdr *) skb_put(skb, L2CAP_CMD_HDR_SIZE);
+	cmd = skb_put(skb, L2CAP_CMD_HDR_SIZE);
 	cmd->code  = code;
 	cmd->ident = ident;
 	cmd->len   = cpu_to_le16(dlen);
 
 	if (dlen) {
 		count -= L2CAP_HDR_SIZE + L2CAP_CMD_HDR_SIZE;
-		memcpy(skb_put(skb, count), data, count);
+		skb_put_data(skb, data, count);
 		data += count;
 	}
 
@@ -2940,7 +2968,7 @@ static struct sk_buff *l2cap_build_cmd(struct l2cap_conn *conn, u8 code,
 		if (!*frag)
 			goto fail;
 
-		memcpy(skb_put(*frag, count), data, count);
+		skb_put_data(*frag, data, count);
 
 		len  -= count;
 		data += count;
@@ -3059,7 +3087,7 @@ static void l2cap_ack_timeout(struct work_struct *work)
 					       ack_timer.work);
 	u16 frames_to_ack;
 
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	l2cap_chan_lock(chan);
 
@@ -3204,7 +3232,7 @@ static int l2cap_build_conf_req(struct l2cap_chan *chan, void *data, size_t data
 	void *endptr = data + data_size;
 	u16 size;
 
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	if (chan->num_conf_req || chan->num_conf_rsp)
 		goto done;
@@ -3334,7 +3362,7 @@ static int l2cap_parse_conf_req(struct l2cap_chan *chan, void *data, size_t data
 	u16 result = L2CAP_CONF_SUCCESS;
 	u16 size;
 
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	while (len >= L2CAP_CONF_OPT_SIZE) {
 		len -= l2cap_get_conf_opt(&req, &type, &olen, &val);
@@ -3554,7 +3582,7 @@ static int l2cap_parse_conf_rsp(struct l2cap_chan *chan, void *rsp, int len,
 	struct l2cap_conf_rfc rfc = { .mode = L2CAP_MODE_BASIC };
 	struct l2cap_conf_efs efs;
 
-	BT_DBG("chan %pK, rsp %pK, len %d, req %pK", chan, rsp, len, data);
+	BT_DBG("chan %p, rsp %p, len %d, req %p", chan, rsp, len, data);
 
 	while (len >= L2CAP_CONF_OPT_SIZE) {
 		len -= l2cap_get_conf_opt(&rsp, &type, &olen, &val);
@@ -3667,7 +3695,7 @@ static int l2cap_build_conf_rsp(struct l2cap_chan *chan, void *data,
 	struct l2cap_conf_rsp *rsp = data;
 	void *ptr = rsp->data;
 
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	rsp->scid   = cpu_to_le16(chan->dcid);
 	rsp->result = cpu_to_le16(result);
@@ -3681,7 +3709,7 @@ void __l2cap_le_connect_rsp_defer(struct l2cap_chan *chan)
 	struct l2cap_le_conn_rsp rsp;
 	struct l2cap_conn *conn = chan->conn;
 
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	rsp.dcid    = cpu_to_le16(chan->scid);
 	rsp.mtu     = cpu_to_le16(chan->imtu);
@@ -3710,7 +3738,7 @@ void __l2cap_connect_rsp_defer(struct l2cap_chan *chan)
 	else
 		rsp_code = L2CAP_CONN_RSP;
 
-	BT_DBG("chan %pK rsp_code %u", chan, rsp_code);
+	BT_DBG("chan %p rsp_code %u", chan, rsp_code);
 
 	l2cap_send_cmd(conn, chan->ident, rsp_code, sizeof(rsp), &rsp);
 
@@ -3738,7 +3766,7 @@ static void l2cap_conf_rfc_get(struct l2cap_chan *chan, void *rsp, int len)
 		.txwin_size = min_t(u16, chan->ack_win, L2CAP_DEFAULT_TX_WINDOW),
 	};
 
-	BT_DBG("chan %pK, rsp %pK, len %d", chan, rsp, len);
+	BT_DBG("chan %p, rsp %p, len %d", chan, rsp, len);
 
 	if ((chan->mode != L2CAP_MODE_ERTM) && (chan->mode != L2CAP_MODE_STREAMING))
 		return;
@@ -4046,7 +4074,7 @@ static void l2cap_send_efs_conf_rsp(struct l2cap_chan *chan, void *data,
 {
 	struct l2cap_conn *conn = chan->conn;
 
-	BT_DBG("conn %pK chan %pK ident %d flags 0x%4.4x", conn, chan, ident,
+	BT_DBG("conn %p chan %p ident %d flags 0x%4.4x", conn, chan, ident,
 	       flags);
 
 	clear_bit(CONF_LOC_CONF_PEND, &chan->conf_state);
@@ -4093,7 +4121,8 @@ static inline int l2cap_config_req(struct l2cap_conn *conn,
 		return 0;
 	}
 
-	if (chan->state != BT_CONFIG && chan->state != BT_CONNECT2) {
+	if (chan->state != BT_CONFIG && chan->state != BT_CONNECT2 &&
+	    chan->state != BT_CONNECTED) {
 		cmd_reject_invalid_cid(conn, cmd->ident, chan->scid,
 				       chan->dcid);
 		goto unlock;
@@ -4316,6 +4345,7 @@ static inline int l2cap_disconnect_req(struct l2cap_conn *conn,
 		return 0;
 	}
 
+	l2cap_chan_hold(chan);
 	l2cap_chan_lock(chan);
 
 	rsp.dcid = cpu_to_le16(chan->scid);
@@ -4324,12 +4354,11 @@ static inline int l2cap_disconnect_req(struct l2cap_conn *conn,
 
 	chan->ops->set_shutdown(chan);
 
-	l2cap_chan_hold(chan);
 	l2cap_chan_del(chan, ECONNRESET);
 
-	l2cap_chan_unlock(chan);
-
 	chan->ops->close(chan);
+
+	l2cap_chan_unlock(chan);
 	l2cap_chan_put(chan);
 
 	mutex_unlock(&conn->chan_lock);
@@ -4361,20 +4390,21 @@ static inline int l2cap_disconnect_rsp(struct l2cap_conn *conn,
 		return 0;
 	}
 
+	l2cap_chan_hold(chan);
 	l2cap_chan_lock(chan);
 
 	if (chan->state != BT_DISCONN) {
 		l2cap_chan_unlock(chan);
+		l2cap_chan_put(chan);
 		mutex_unlock(&conn->chan_lock);
 		return 0;
 	}
 
-	l2cap_chan_hold(chan);
 	l2cap_chan_del(chan, 0);
 
-	l2cap_chan_unlock(chan);
-
 	chan->ops->close(chan);
+
+	l2cap_chan_unlock(chan);
 	l2cap_chan_put(chan);
 
 	mutex_unlock(&conn->chan_lock);
@@ -4549,8 +4579,7 @@ static int l2cap_create_channel_req(struct l2cap_conn *conn,
 			return 0;
 		}
 
-		BT_DBG("mgr %pK bredr_chan %pK hs_hcon %pK",
-		       mgr, chan, hs_hcon);
+		BT_DBG("mgr %p bredr_chan %p hs_hcon %p", mgr, chan, hs_hcon);
 
 		mgr->bredr_chan = chan;
 		chan->hs_hcon = hs_hcon;
@@ -4579,7 +4608,7 @@ static void l2cap_send_move_chan_req(struct l2cap_chan *chan, u8 dest_amp_id)
 	struct l2cap_move_chan_req req;
 	u8 ident;
 
-	BT_DBG("chan %pK, dest_amp_id %d", chan, dest_amp_id);
+	BT_DBG("chan %p, dest_amp_id %d", chan, dest_amp_id);
 
 	ident = l2cap_get_ident(chan->conn);
 	chan->ident = ident;
@@ -4597,7 +4626,7 @@ static void l2cap_send_move_chan_rsp(struct l2cap_chan *chan, u16 result)
 {
 	struct l2cap_move_chan_rsp rsp;
 
-	BT_DBG("chan %pK, result 0x%4.4x", chan, result);
+	BT_DBG("chan %p, result 0x%4.4x", chan, result);
 
 	rsp.icid = cpu_to_le16(chan->dcid);
 	rsp.result = cpu_to_le16(result);
@@ -4610,7 +4639,7 @@ static void l2cap_send_move_chan_cfm(struct l2cap_chan *chan, u16 result)
 {
 	struct l2cap_move_chan_cfm cfm;
 
-	BT_DBG("chan %pK, result 0x%4.4x", chan, result);
+	BT_DBG("chan %p, result 0x%4.4x", chan, result);
 
 	chan->ident = l2cap_get_ident(chan->conn);
 
@@ -4627,7 +4656,7 @@ static void l2cap_send_move_chan_cfm_icid(struct l2cap_conn *conn, u16 icid)
 {
 	struct l2cap_move_chan_cfm cfm;
 
-	BT_DBG("conn %pK, icid 0x%4.4x", conn, icid);
+	BT_DBG("conn %p, icid 0x%4.4x", conn, icid);
 
 	cfm.icid = cpu_to_le16(icid);
 	cfm.result = cpu_to_le16(L2CAP_MC_UNCONFIRMED);
@@ -4747,7 +4776,7 @@ static void l2cap_logical_finish_move(struct l2cap_chan *chan,
 void l2cap_logical_cfm(struct l2cap_chan *chan, struct hci_chan *hchan,
 		       u8 status)
 {
-	BT_DBG("chan %pK, hchan %pK, status %d", chan, hchan, status);
+	BT_DBG("chan %p, hchan %p, status %d", chan, hchan, status);
 
 	if (status) {
 		l2cap_logical_fail(chan);
@@ -4766,7 +4795,7 @@ void l2cap_logical_cfm(struct l2cap_chan *chan, struct hci_chan *hchan,
 
 void l2cap_move_start(struct l2cap_chan *chan)
 {
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	if (chan->local_amp_id == AMP_ID_BREDR) {
 		if (chan->chan_policy != BT_CHANNEL_POLICY_AMP_PREFERRED)
@@ -4786,7 +4815,7 @@ void l2cap_move_start(struct l2cap_chan *chan)
 static void l2cap_do_create(struct l2cap_chan *chan, int result,
 			    u8 local_amp_id, u8 remote_amp_id)
 {
-	BT_DBG("chan %pK state %s %u -> %u", chan, state_to_string(chan->state),
+	BT_DBG("chan %p state %s %u -> %u", chan, state_to_string(chan->state),
 	       local_amp_id, remote_amp_id);
 
 	chan->fcs = L2CAP_FCS_NONE;
@@ -4895,13 +4924,11 @@ void __l2cap_physical_cfm(struct l2cap_chan *chan, int result)
 	u8 local_amp_id = chan->local_amp_id;
 	u8 remote_amp_id = chan->remote_amp_id;
 
-	BT_DBG("chan %pK, result %d, local_amp_id %d, remote_amp_id %d",
+	BT_DBG("chan %p, result %d, local_amp_id %d, remote_amp_id %d",
 	       chan, result, local_amp_id, remote_amp_id);
 
-	if (chan->state == BT_DISCONN || chan->state == BT_CLOSED) {
-		l2cap_chan_unlock(chan);
+	if (chan->state == BT_DISCONN || chan->state == BT_CLOSED)
 		return;
-	}
 
 	if (chan->state != BT_CONNECTED) {
 		l2cap_do_create(chan, result, local_amp_id, remote_amp_id);
@@ -5267,14 +5294,7 @@ static inline int l2cap_conn_param_update_req(struct l2cap_conn *conn,
 
 	memset(&rsp, 0, sizeof(rsp));
 
-	if (min < hcon->le_conn_min_interval ||
-	    max > hcon->le_conn_max_interval) {
-		BT_DBG("requested connection interval exceeds current bounds.");
-		err = -EINVAL;
-	} else {
-		err = hci_check_conn_params(min, max, latency, to_multiplier);
-	}
-
+	err = hci_check_conn_params(min, max, latency, to_multiplier);
 	if (err)
 		rsp.result = cpu_to_le16(L2CAP_CONN_PARAM_REJECTED);
 	else
@@ -5625,10 +5645,8 @@ static inline int l2cap_le_credits(struct l2cap_conn *conn,
 
 	chan->tx_credits += credits;
 
-	while (chan->tx_credits && !skb_queue_empty(&chan->tx_q)) {
-		l2cap_do_send(chan, skb_dequeue(&chan->tx_q));
-		chan->tx_credits--;
-	}
+	/* Resume sending */
+	l2cap_le_flowctl_send(chan);
 
 	if (chan->tx_credits)
 		chan->ops->resume(chan);
@@ -5825,7 +5843,7 @@ static void l2cap_send_i_or_rr_or_rnr(struct l2cap_chan *chan)
 {
 	struct l2cap_ctrl control;
 
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	memset(&control, 0, sizeof(control));
 	control.sframe = 1;
@@ -5889,6 +5907,9 @@ static int l2cap_reassemble_sdu(struct l2cap_chan *chan, struct sk_buff *skb,
 
 	case L2CAP_SAR_START:
 		if (chan->sdu)
+			break;
+
+		if (!pskb_may_pull(skb, L2CAP_SDULEN_SIZE))
 			break;
 
 		chan->sdu_len = get_unaligned_le16(skb->data);
@@ -5980,7 +6001,7 @@ static int l2cap_rx_queued_iframes(struct l2cap_chan *chan)
 	 * until a gap is encountered.
 	 */
 
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	while (!test_bit(CONN_LOCAL_BUSY, &chan->conn_state)) {
 		struct sk_buff *skb;
@@ -6012,7 +6033,7 @@ static void l2cap_handle_srej(struct l2cap_chan *chan,
 {
 	struct sk_buff *skb;
 
-	BT_DBG("chan %pK, control %pK", chan, control);
+	BT_DBG("chan %p, control %p", chan, control);
 
 	if (control->reqseq == chan->next_tx_seq) {
 		BT_DBG("Invalid reqseq %d, disconnecting", control->reqseq);
@@ -6070,7 +6091,7 @@ static void l2cap_handle_rej(struct l2cap_chan *chan,
 {
 	struct sk_buff *skb;
 
-	BT_DBG("chan %pK, control %pK", chan, control);
+	BT_DBG("chan %p, control %p", chan, control);
 
 	if (control->reqseq == chan->next_tx_seq) {
 		BT_DBG("Invalid reqseq %d, disconnecting", control->reqseq);
@@ -6104,7 +6125,7 @@ static void l2cap_handle_rej(struct l2cap_chan *chan,
 
 static u8 l2cap_classify_txseq(struct l2cap_chan *chan, u16 txseq)
 {
-	BT_DBG("chan %pK, txseq %d", chan, txseq);
+	BT_DBG("chan %p, txseq %d", chan, txseq);
 
 	BT_DBG("last_acked_seq %d, expected_tx_seq %d", chan->last_acked_seq,
 	       chan->expected_tx_seq);
@@ -6195,7 +6216,7 @@ static int l2cap_rx_state_recv(struct l2cap_chan *chan,
 	int err = 0;
 	bool skb_in_use = false;
 
-	BT_DBG("chan %pK, control %pK, skb %pK, event %d", chan, control, skb,
+	BT_DBG("chan %p, control %p, skb %p, event %d", chan, control, skb,
 	       event);
 
 	switch (event) {
@@ -6251,7 +6272,7 @@ static int l2cap_rx_state_recv(struct l2cap_chan *chan,
 			 */
 			skb_queue_tail(&chan->srej_q, skb);
 			skb_in_use = true;
-			BT_DBG("Queued %pK (queue len %d)", skb,
+			BT_DBG("Queued %p (queue len %d)", skb,
 			       skb_queue_len(&chan->srej_q));
 
 			clear_bit(CONN_SREJ_ACT, &chan->conn_state);
@@ -6315,7 +6336,7 @@ static int l2cap_rx_state_recv(struct l2cap_chan *chan,
 	}
 
 	if (skb && !skb_in_use) {
-		BT_DBG("Freeing %pK", skb);
+		BT_DBG("Freeing %p", skb);
 		kfree_skb(skb);
 	}
 
@@ -6330,7 +6351,7 @@ static int l2cap_rx_state_srej_sent(struct l2cap_chan *chan,
 	u16 txseq = control->txseq;
 	bool skb_in_use = false;
 
-	BT_DBG("chan %pK, control %pK, skb %pK, event %d", chan, control, skb,
+	BT_DBG("chan %p, control %p, skb %p, event %d", chan, control, skb,
 	       event);
 
 	switch (event) {
@@ -6341,7 +6362,7 @@ static int l2cap_rx_state_srej_sent(struct l2cap_chan *chan,
 			l2cap_pass_to_tx(chan, control);
 			skb_queue_tail(&chan->srej_q, skb);
 			skb_in_use = true;
-			BT_DBG("Queued %pK (queue len %d)", skb,
+			BT_DBG("Queued %p (queue len %d)", skb,
 			       skb_queue_len(&chan->srej_q));
 
 			chan->expected_tx_seq = __next_seq(chan, txseq);
@@ -6352,7 +6373,7 @@ static int l2cap_rx_state_srej_sent(struct l2cap_chan *chan,
 			l2cap_pass_to_tx(chan, control);
 			skb_queue_tail(&chan->srej_q, skb);
 			skb_in_use = true;
-			BT_DBG("Queued %pK (queue len %d)", skb,
+			BT_DBG("Queued %p (queue len %d)", skb,
 			       skb_queue_len(&chan->srej_q));
 
 			err = l2cap_rx_queued_iframes(chan);
@@ -6367,7 +6388,7 @@ static int l2cap_rx_state_srej_sent(struct l2cap_chan *chan,
 			 */
 			skb_queue_tail(&chan->srej_q, skb);
 			skb_in_use = true;
-			BT_DBG("Queued %pK (queue len %d)", skb,
+			BT_DBG("Queued %p (queue len %d)", skb,
 			       skb_queue_len(&chan->srej_q));
 
 			l2cap_pass_to_tx(chan, control);
@@ -6381,7 +6402,7 @@ static int l2cap_rx_state_srej_sent(struct l2cap_chan *chan,
 			 */
 			skb_queue_tail(&chan->srej_q, skb);
 			skb_in_use = true;
-			BT_DBG("Queued %pK (queue len %d)", skb,
+			BT_DBG("Queued %p (queue len %d)", skb,
 			       skb_queue_len(&chan->srej_q));
 
 			l2cap_pass_to_tx(chan, control);
@@ -6458,7 +6479,7 @@ static int l2cap_rx_state_srej_sent(struct l2cap_chan *chan,
 	}
 
 	if (skb && !skb_in_use) {
-		BT_DBG("Freeing %pK", skb);
+		BT_DBG("Freeing %p", skb);
 		kfree_skb(skb);
 	}
 
@@ -6467,7 +6488,7 @@ static int l2cap_rx_state_srej_sent(struct l2cap_chan *chan,
 
 static int l2cap_finish_move(struct l2cap_chan *chan)
 {
-	BT_DBG("chan %pK", chan);
+	BT_DBG("chan %p", chan);
 
 	chan->rx_state = L2CAP_RX_STATE_RECV;
 
@@ -6485,7 +6506,7 @@ static int l2cap_rx_state_wait_p(struct l2cap_chan *chan,
 {
 	int err;
 
-	BT_DBG("chan %pK, control %pK, skb %pK, event %d", chan, control, skb,
+	BT_DBG("chan %p, control %p, skb %p, event %d", chan, control, skb,
 	       event);
 
 	if (!control->poll)
@@ -6569,7 +6590,7 @@ static int l2cap_rx(struct l2cap_chan *chan, struct l2cap_ctrl *control,
 {
 	int err = 0;
 
-	BT_DBG("chan %pK, control %pK, skb %pK, event %d, state %d", chan,
+	BT_DBG("chan %p, control %p, skb %p, event %d, state %d", chan,
 	       control, skb, event, chan->rx_state);
 
 	if (__valid_reqseq(chan, control->reqseq)) {
@@ -6604,9 +6625,7 @@ static int l2cap_rx(struct l2cap_chan *chan, struct l2cap_ctrl *control,
 static int l2cap_stream_rx(struct l2cap_chan *chan, struct l2cap_ctrl *control,
 			   struct sk_buff *skb)
 {
-	int err = 0;
-
-	BT_DBG("chan %pK, control %pK, skb %pK, state %d", chan, control, skb,
+	BT_DBG("chan %p, control %p, skb %p, state %d", chan, control, skb,
 	       chan->rx_state);
 
 	if (l2cap_classify_txseq(chan, control->txseq) ==
@@ -6628,7 +6647,7 @@ static int l2cap_stream_rx(struct l2cap_chan *chan, struct l2cap_ctrl *control,
 		chan->sdu_len = 0;
 
 		if (skb) {
-			BT_DBG("Freeing %pK", skb);
+			BT_DBG("Freeing %p", skb);
 			kfree_skb(skb);
 		}
 	}
@@ -6636,7 +6655,7 @@ static int l2cap_stream_rx(struct l2cap_chan *chan, struct l2cap_ctrl *control,
 	chan->last_acked_seq = control->txseq;
 	chan->expected_tx_seq = __next_seq(chan, control->txseq);
 
-	return err;
+	return 0;
 }
 
 static int l2cap_data_rcv(struct l2cap_chan *chan, struct sk_buff *skb)
@@ -6666,6 +6685,11 @@ static int l2cap_data_rcv(struct l2cap_chan *chan, struct sk_buff *skb)
 	if (len > chan->mps) {
 		l2cap_send_disconn_req(chan, ECONNRESET);
 		goto drop;
+	}
+
+	if (chan->ops->filter) {
+		if (chan->ops->filter(chan, skb))
+			goto drop;
 	}
 
 	if (!control->sframe) {
@@ -6741,7 +6765,7 @@ static void l2cap_chan_le_send_credits(struct l2cap_chan *chan)
 
 	return_credits = le_max_credits - chan->rx_credits;
 
-	BT_DBG("chan %pK returning %u credits to sender", chan, return_credits);
+	BT_DBG("chan %p returning %u credits to sender", chan, return_credits);
 
 	chan->rx_credits += return_credits;
 
@@ -6802,6 +6826,16 @@ static int l2cap_le_data_rcv(struct l2cap_chan *chan, struct sk_buff *skb)
 		chan->sdu = skb;
 		chan->sdu_len = sdu_len;
 		chan->sdu_last_frag = skb;
+
+		/* Detect if remote is not able to use the selected MPS */
+		if (skb->len + L2CAP_SDULEN_SIZE < chan->mps) {
+			u16 mps_len = skb->len + L2CAP_SDULEN_SIZE;
+
+			/* Adjust the number of credits */
+			BT_DBG("chan->mps %u -> %u", chan->mps, mps_len);
+			chan->mps = mps_len;
+			l2cap_chan_le_send_credits(chan);
+		}
 
 		return 0;
 	}
@@ -6866,7 +6900,7 @@ static void l2cap_data_channel(struct l2cap_conn *conn, u16 cid,
 		}
 	}
 
-	BT_DBG("chan %pK, len %d", chan, skb->len);
+	BT_DBG("chan %p, len %d", chan, skb->len);
 
 	/* If we receive data on a fixed channel before the info req/rsp
 	 * procdure is done simply assume that the channel is supported
@@ -6906,7 +6940,7 @@ static void l2cap_data_channel(struct l2cap_conn *conn, u16 cid,
 		goto done;
 
 	default:
-		BT_DBG("chan %pK: bad mode 0x%2.2x", chan, chan->mode);
+		BT_DBG("chan %p: bad mode 0x%2.2x", chan, chan->mode);
 		break;
 	}
 
@@ -6931,7 +6965,7 @@ static void l2cap_conless_channel(struct l2cap_conn *conn, __le16 psm,
 	if (!chan)
 		goto free_skb;
 
-	BT_DBG("chan %pK, len %d", chan, skb->len);
+	BT_DBG("chan %p, len %d", chan, skb->len);
 
 	if (chan->state != BT_BOUND && chan->state != BT_CONNECTED)
 		goto drop;
@@ -7044,7 +7078,7 @@ static struct l2cap_conn *l2cap_conn_add(struct hci_conn *hcon)
 	conn->hcon = hci_conn_get(hcon);
 	conn->hchan = hchan;
 
-	BT_DBG("hcon %pK conn %pK hchan %pK", hcon, conn, hchan);
+	BT_DBG("hcon %p conn %p hchan %p", hcon, conn, hchan);
 
 	switch (hcon->type) {
 	case LE_LINK:
@@ -7110,7 +7144,7 @@ int l2cap_chan_connect(struct l2cap_chan *chan, __le16 psm, u16 cid,
 	BT_DBG("%pMR -> %pMR (type %u) psm 0x%2.2x", &chan->src, dst,
 	       dst_type, __le16_to_cpu(psm));
 
-	hdev = hci_get_route(dst, &chan->src);
+	hdev = hci_get_route(dst, &chan->src, chan->src_type);
 	if (!hdev)
 		return -EHOSTUNREACH;
 
@@ -7179,8 +7213,6 @@ int l2cap_chan_connect(struct l2cap_chan *chan, __le16 psm, u16 cid,
 	chan->dcid = cid;
 
 	if (bdaddr_type_is_le(dst_type)) {
-		u8 role;
-
 		/* Convert from L2CAP channel address type to HCI address type
 		 */
 		if (dst_type == BDADDR_LE_PUBLIC)
@@ -7189,14 +7221,15 @@ int l2cap_chan_connect(struct l2cap_chan *chan, __le16 psm, u16 cid,
 			dst_type = ADDR_LE_DEV_RANDOM;
 
 		if (hci_dev_test_flag(hdev, HCI_ADVERTISING))
-			role = HCI_ROLE_SLAVE;
+			hcon = hci_connect_le(hdev, dst, dst_type,
+					      chan->sec_level,
+					      HCI_LE_CONN_TIMEOUT,
+					      HCI_ROLE_SLAVE, NULL);
 		else
-			role = HCI_ROLE_MASTER;
+			hcon = hci_connect_le_scan(hdev, dst, dst_type,
+						   chan->sec_level,
+						   HCI_LE_CONN_TIMEOUT);
 
-		hcon = hci_connect_le_scan(hdev, dst, dst_type,
-					   chan->sec_level,
-					   HCI_LE_CONN_TIMEOUT,
-					   role);
 	} else {
 		u8 auth_type = l2cap_get_auth_type(chan);
 		hcon = hci_connect_acl(hdev, dst, chan->sec_level, auth_type);
@@ -7340,7 +7373,7 @@ static void l2cap_connect_cfm(struct hci_conn *hcon, u8 status)
 	if (hcon->type != ACL_LINK && hcon->type != LE_LINK)
 		return;
 
-	BT_DBG("hcon %pK bdaddr %pMR status %d", hcon, &hcon->dst, status);
+	BT_DBG("hcon %p bdaddr %pMR status %d", hcon, &hcon->dst, status);
 
 	if (status) {
 		l2cap_conn_del(hcon, bt_to_errno(status));
@@ -7395,7 +7428,7 @@ int l2cap_disconn_ind(struct hci_conn *hcon)
 {
 	struct l2cap_conn *conn = hcon->l2cap_data;
 
-	BT_DBG("hcon %pK", hcon);
+	BT_DBG("hcon %p", hcon);
 
 	if (!conn)
 		return HCI_ERROR_REMOTE_USER_TERM;
@@ -7407,7 +7440,7 @@ static void l2cap_disconn_cfm(struct hci_conn *hcon, u8 reason)
 	if (hcon->type != ACL_LINK && hcon->type != LE_LINK)
 		return;
 
-	BT_DBG("hcon %pK reason %d", hcon, reason);
+	BT_DBG("hcon %p reason %d", hcon, reason);
 
 	l2cap_conn_del(hcon, bt_to_errno(reason));
 }
@@ -7437,14 +7470,14 @@ static void l2cap_security_cfm(struct hci_conn *hcon, u8 status, u8 encrypt)
 	if (!conn)
 		return;
 
-	BT_DBG("conn %pK status 0x%2.2x encrypt %u", conn, status, encrypt);
+	BT_DBG("conn %p status 0x%2.2x encrypt %u", conn, status, encrypt);
 
 	mutex_lock(&conn->chan_lock);
 
 	list_for_each_entry(chan, &conn->chan_l, list) {
 		l2cap_chan_lock(chan);
 
-		BT_DBG("chan %pK scid 0x%4.4x state %s", chan, chan->scid,
+		BT_DBG("chan %p scid 0x%4.4x state %s", chan, chan->scid,
 		       state_to_string(chan->state));
 
 		if (chan->scid == L2CAP_CID_A2MP) {
@@ -7527,7 +7560,7 @@ void l2cap_recv_acldata(struct hci_conn *hcon, struct sk_buff *skb, u16 flags)
 	int len;
 
 	/* For AMP controller do not create l2cap conn */
-	if (!conn && hcon->hdev->dev_type != HCI_BREDR)
+	if (!conn && hcon->hdev->dev_type != HCI_PRIMARY)
 		goto drop;
 
 	if (!conn)
@@ -7536,7 +7569,7 @@ void l2cap_recv_acldata(struct hci_conn *hcon, struct sk_buff *skb, u16 flags)
 	if (!conn)
 		goto drop;
 
-	BT_DBG("conn %pK len %d flags 0x%x", conn, skb->len, flags);
+	BT_DBG("conn %p len %d flags 0x%x", conn, skb->len, flags);
 
 	switch (flags) {
 	case ACL_START:

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2019 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2020 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -110,7 +110,7 @@ QDF_STATUS hdd_softap_deinit_tx_rx_sta(struct hdd_adapter *adapter,
 
 /**
  * hdd_softap_rx_packet_cbk() - Receive packet handler
- * @context: pointer to HDD context
+ * @adapter_context: pointer to HDD adapter
  * @rx_buf: pointer to rx qdf_nbuf chain
  *
  * Receive callback registered with the Data Path.  The Data Path will
@@ -120,7 +120,7 @@ QDF_STATUS hdd_softap_deinit_tx_rx_sta(struct hdd_adapter *adapter,
  * Return: QDF_STATUS_E_FAILURE if any errors encountered,
  *	   QDF_STATUS_SUCCESS otherwise
  */
-QDF_STATUS hdd_softap_rx_packet_cbk(void *context, qdf_nbuf_t rx_buf);
+QDF_STATUS hdd_softap_rx_packet_cbk(void *adapter_context, qdf_nbuf_t rx_buf);
 
 /**
  * hdd_softap_deregister_sta() - Deregister a STA with the Data Path
@@ -241,17 +241,15 @@ int hdd_post_dhcp_ind(struct hdd_adapter *adapter,
 		      uint8_t sta_id, uint16_t type);
 
 /**
- * hdd_inspect_dhcp_packet() -  Inspect DHCP packet
+ * hdd_softap_inspect_dhcp_packet() -  Inspect DHCP packet
  * @adapter: pointer to hdd adapter
- * @sta_id: peer station ID
  * @skb: pointer to OS packet (sk_buff)
  * @dir: direction
  *
  * Return: error number
  */
-int hdd_inspect_dhcp_packet(struct hdd_adapter *adapter,
-			    uint8_t sta_id,
-			    struct sk_buff *skb,
-			    enum qdf_proto_dir dir);
+int hdd_softap_inspect_dhcp_packet(struct hdd_adapter *adapter,
+				   struct sk_buff *skb,
+				   enum qdf_proto_dir dir);
 
 #endif /* end #if !defined(WLAN_HDD_SOFTAP_TX_RX_H) */

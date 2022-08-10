@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2018, 2021 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -34,21 +34,27 @@
 struct wlan_objmgr_psoc;
 struct wifi_pos_req_msg;
 
-#define wifi_pos_log(level, args...) \
-	QDF_TRACE(QDF_MODULE_ID_WIFIPOS, level, ## args)
-#define wifi_pos_logfl(level, format, args...) \
-	wifi_pos_log(level, FL(format), ## args)
+#define wifi_pos_alert(params...) \
+	QDF_TRACE_FATAL(QDF_MODULE_ID_WIFIPOS, params)
+#define wifi_pos_err(params...) \
+	QDF_TRACE_ERROR(QDF_MODULE_ID_WIFIPOS, params)
+#define wifi_pos_warn(params...) \
+	QDF_TRACE_WARN(QDF_MODULE_ID_WIFIPOS, params)
+#define wifi_pos_notice(params...) \
+	QDF_TRACE_INFO(QDF_MODULE_ID_WIFIPOS, params)
+#define wifi_pos_debug(params...) \
+	QDF_TRACE_DEBUG(QDF_MODULE_ID_WIFIPOS, params)
 
-#define wifi_pos_alert(format, args...) \
-	wifi_pos_logfl(QDF_TRACE_LEVEL_FATAL, format, ## args)
-#define wifi_pos_err(format, args...) \
-	wifi_pos_logfl(QDF_TRACE_LEVEL_ERROR, format, ## args)
-#define wifi_pos_warn(format, args...) \
-	wifi_pos_logfl(QDF_TRACE_LEVEL_WARN, format, ## args)
-#define wifi_pos_notice(format, args...) \
-	wifi_pos_logfl(QDF_TRACE_LEVEL_INFO, format, ## args)
-#define wifi_pos_debug(format, args...) \
-	wifi_pos_logfl(QDF_TRACE_LEVEL_DEBUG, format, ## args)
+#define wifipos_nofl_alert(params...) \
+	QDF_TRACE_FATAL_NO_FL(QDF_MODULE_ID_WIFIPOS, params)
+#define wifipos_nofl_err(params...) \
+	QDF_TRACE_ERROR_NO_FL(QDF_MODULE_ID_WIFIPOS, params)
+#define wifipos_nofl_warn(params...) \
+	QDF_TRACE_WARN_NO_FL(QDF_MODULE_ID_WIFIPOS, params)
+#define wifipos_nofl_notice(params...) \
+	QDF_TRACE_INFO_NO_FL(QDF_MODULE_ID_WIFIPOS, params)
+#define wifipos_nofl_debug(params...) \
+	QDF_TRACE_DEBUG_NO_FL(QDF_MODULE_ID_WIFIPOS, params)
 
 #define OEM_APP_SIGNATURE_LEN      16
 #define OEM_APP_SIGNATURE_STR      "QUALCOMM-OEM-APP"
@@ -60,6 +66,8 @@ struct wifi_pos_req_msg;
 
 #ifndef OEM_DATA_RSP_SIZE
 #define OEM_DATA_RSP_SIZE 1724
+/* Header + VHT80 CIR * 2 chains */
+#define OEM_DATA_DMA_BUFF_SIZE (64 + 512 * 4 * 2)
 #endif
 
 /**

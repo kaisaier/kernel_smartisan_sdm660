@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2017-2019 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -59,14 +59,24 @@ void wma_print_he_ppet(void *ppet);
 void wma_print_he_phy_cap(uint32_t *phy_cap);
 
 /**
- * wma_print_he_mac_cap() - Print HE MAC Capability
+ * wma_print_he_mac_cap_w1() - Print HE MAC Capability
  * @mac_cap: MAC Capability
  *
  * This function prints HE MAC Capability received from FW.
  *
  * Return: none
  */
-void wma_print_he_mac_cap(uint32_t mac_cap);
+void wma_print_he_mac_cap_w1(uint32_t mac_cap);
+
+/**
+ * wma_print_he_mac_cap_w2() - Print HE MAC Capability
+ * @mac_cap: MAC Capability
+ *
+ * This function prints HE MAC Capability received from FW.
+ *
+ * Return: none
+ */
+void wma_print_he_mac_cap_w2(uint32_t mac_cap);
 
 /**
  * wma_print_he_op() - Print HE Operation
@@ -126,16 +136,6 @@ void wma_update_vdev_he_ops(struct wma_vdev_start_req *req,
 		tpAddBssParams add_bss);
 
 /**
- * wma_copy_txrxnode_he_ops() - copy HE ops from vdev start req to txrx node
- * @node: pointer to txrx node
- * @req: pointer to vdev start request
- *
- * Return: None
- */
-void wma_copy_txrxnode_he_ops(struct wma_txrx_node *node,
-		struct wma_vdev_start_req *req);
-
-/**
  * wma_copy_vdev_start_he_ops() - copy HE ops from vdev start req to vdev start
  * @params: pointer to vdev_start_params
  * @req: pointer to vdev start request
@@ -145,6 +145,33 @@ void wma_copy_txrxnode_he_ops(struct wma_txrx_node *node,
 void wma_copy_vdev_start_he_ops(struct vdev_start_params *params,
 		struct wma_vdev_start_req *req);
 
+#define DOT11AX_HEMU_MODE 0x30
+#define HE_SUBFEE 0
+#define HE_SUBFER 1
+#define HE_MUBFEE 2
+#define HE_MUBFER 3
+
+/**
+ * wma_set_he_txbf_params() - set HE Tx beamforming params to FW
+ * @vdev_id: VDEV id
+ * @su bfer: SU beamformer capability
+ * @su bfee: SU beamformee capability
+ * @mu bfer: MU beamformer capability
+ *
+ * Return: None
+ */
+void wma_set_he_txbf_params(uint8_t vdev_id, bool su_bfer,
+			    bool su_bfee, bool mu_bfer);
+
+
+/**
+ * wma_set_he_txbf_cfg() - set HE Tx beamforming mlme cfg to FW
+ * @mac: Global MAC context
+ * @vdev_id: VDEV id
+ *
+ * Return: None
+ */
+void wma_set_he_txbf_cfg(struct mac_context *mac, uint8_t vdev_id);
 /**
  * wma_vdev_set_he_bss_params() - set HE OPs in vdev start
  * @wma: pointer to wma handle
@@ -243,7 +270,11 @@ static inline void wma_print_he_phy_cap(uint32_t *phy_cap)
 {
 }
 
-static inline void wma_print_he_mac_cap(uint32_t mac_cap)
+static inline void wma_print_he_mac_cap_w1(uint32_t mac_cap)
+{
+}
+
+static inline void wma_print_he_mac_cap_w2(uint32_t mac_cap)
 {
 }
 
@@ -273,13 +304,18 @@ static inline void wma_update_vdev_he_ops(struct wma_vdev_start_req *req,
 			tpAddBssParams add_bss)
 {
 }
-static inline void wma_copy_txrxnode_he_ops(struct wma_txrx_node *intr,
+
+static inline void wma_copy_vdev_start_he_ops(struct vdev_start_params *params,
 			struct wma_vdev_start_req *req)
 {
 }
 
-static inline void wma_copy_vdev_start_he_ops(struct vdev_start_params *params,
-			struct wma_vdev_start_req *req)
+static inline void wma_set_he_txbf_params(uint8_t vdev_id, bool su_bfer,
+					  bool su_bfee, bool mu_bfer)
+{
+}
+
+static inline void wma_set_he_txbf_cfg(struct mac_context *mac, uint8_t vdev_id)
 {
 }
 

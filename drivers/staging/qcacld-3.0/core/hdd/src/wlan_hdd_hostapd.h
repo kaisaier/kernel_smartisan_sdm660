@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2020 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -35,17 +35,12 @@
 
 /* Preprocessor definitions and constants */
 
-/* max length of command string in hostapd ioctl */
-#define HOSTAPD_IOCTL_COMMAND_STRLEN_MAX   8192
-
 struct hdd_adapter *hdd_wlan_create_ap_dev(struct hdd_context *hdd_ctx,
 				      tSirMacAddr macAddr,
 				      unsigned char name_assign_type,
 				      uint8_t *name);
 
-QDF_STATUS hdd_unregister_hostapd(struct hdd_adapter *adapter, bool rtnl_held);
-
-eCsrAuthType
+enum csr_akm_type
 hdd_translate_rsn_to_csr_auth_type(uint8_t auth_suite[4]);
 
 int hdd_softap_set_channel_change(struct net_device *dev,
@@ -114,18 +109,18 @@ hdd_translate_rsn_to_csr_encryption_type(uint8_t cipher_suite[4]);
 eCsrEncryptionType
 hdd_translate_rsn_to_csr_encryption_type(uint8_t cipher_suite[4]);
 
-eCsrAuthType
+enum csr_akm_type
 hdd_translate_wpa_to_csr_auth_type(uint8_t auth_suite[4]);
 
 eCsrEncryptionType
 hdd_translate_wpa_to_csr_encryption_type(uint8_t cipher_suite[4]);
 
 QDF_STATUS hdd_softap_sta_deauth(struct hdd_adapter *adapter,
-		struct csr_del_sta_params *pDelStaParams);
+				 struct csr_del_sta_params *param);
 void hdd_softap_sta_disassoc(struct hdd_adapter *adapter,
-			     struct csr_del_sta_params *pDelStaParams);
+			     struct csr_del_sta_params *param);
 
-QDF_STATUS hdd_hostapd_sap_event_cb(tpSap_Event pSapEvent,
+QDF_STATUS hdd_hostapd_sap_event_cb(struct sap_event *sap_event,
 				    void *context);
 /**
  * hdd_init_ap_mode() - to init the AP adaptor
@@ -237,13 +232,34 @@ int wlan_hdd_disable_channels(struct hdd_context *hdd_ctx);
  * hdd_check_and_disconnect_sta_on_invalid_channel() - Disconnect STA if it is
  * on invalid channel
  * @hdd_ctx: pointer to hdd context
+ * @reason: Mac Disconnect reason code as per @enum eSirMacReasonCodes
  *
  * STA should be disconnected before starting the SAP if it is on indoor
  * channel.
  *
  * Return: void
  */
-void hdd_check_and_disconnect_sta_on_invalid_channel(
-						struct hdd_context *hdd_ctx);
+void
+hdd_check_and_disconnect_sta_on_invalid_channel(struct hdd_context *hdd_ctx,
+						tSirMacReasonCodes reason);
+
+/**
+ * hdd_stop_sap_due_to_invalid_channel() - to stop sap in case of invalid chnl
+ * @work: pointer to work structure
+ *
+ * Let's say SAP detected RADAR and trying to select the new channel and if no
+ * valid channel is found due to none of the channels are available or
+ * regulatory restriction then SAP needs to be stopped. so SAP state-machine
+ * will create a work to stop the bss
+ *
+ * stop bss has to happen through worker thread because radar indication comes
+ * from FW through mc thread or main host thread and if same thread is used to
+ * do stopbss then waiting for stopbss to finish operation will halt mc thread
+ * to freeze which will trigger stopbss timeout. Instead worker thread can do
+ * the stopbss operation while mc thread waits for stopbss to finish.
+ *
+ * Return: none
+ */
+void hdd_stop_sap_due_to_invalid_channel(struct work_struct *work);
 
 #endif /* end #if !defined(WLAN_HDD_HOSTAPD_H) */

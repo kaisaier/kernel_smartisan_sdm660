@@ -1,22 +1,11 @@
-/* Copyright (c) 2008-2016, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2008-2019, 2021, The Linux Foundation. All rights reserved.
  */
 
-#include <linux/ioctl.h>
-#include <linux/compat.h>
-#include <linux/uaccess.h>
-#include <linux/fs.h>
 #include "kgsl_device.h"
 #include "kgsl_sync.h"
+#include "adreno.h"
 
 static const struct kgsl_ioctl kgsl_ioctl_funcs[] = {
 	KGSL_IOCTL_FUNC(IOCTL_KGSL_DEVICE_GETPROPERTY,
@@ -48,10 +37,6 @@ static const struct kgsl_ioctl kgsl_ioctl_funcs[] = {
 			kgsl_ioctl_sharedmem_flush_cache),
 	KGSL_IOCTL_FUNC(IOCTL_KGSL_GPUMEM_ALLOC,
 			kgsl_ioctl_gpumem_alloc),
-	KGSL_IOCTL_FUNC(IOCTL_KGSL_CFF_SYNCMEM,
-			kgsl_ioctl_cff_syncmem),
-	KGSL_IOCTL_FUNC(IOCTL_KGSL_CFF_USER_EVENT,
-			kgsl_ioctl_cff_user_event),
 	KGSL_IOCTL_FUNC(IOCTL_KGSL_TIMESTAMP_EVENT,
 			kgsl_ioctl_timestamp_event),
 	KGSL_IOCTL_FUNC(IOCTL_KGSL_SETPROPERTY,
@@ -74,8 +59,6 @@ static const struct kgsl_ioctl kgsl_ioctl_funcs[] = {
 			kgsl_ioctl_syncsource_create_fence),
 	KGSL_IOCTL_FUNC(IOCTL_KGSL_SYNCSOURCE_SIGNAL_FENCE,
 			kgsl_ioctl_syncsource_signal_fence),
-	KGSL_IOCTL_FUNC(IOCTL_KGSL_CFF_SYNC_GPUOBJ,
-			kgsl_ioctl_cff_sync_gpuobj),
 	KGSL_IOCTL_FUNC(IOCTL_KGSL_GPUOBJ_ALLOC,
 			kgsl_ioctl_gpuobj_alloc),
 	KGSL_IOCTL_FUNC(IOCTL_KGSL_GPUOBJ_FREE,
@@ -102,6 +85,20 @@ static const struct kgsl_ioctl kgsl_ioctl_funcs[] = {
 			kgsl_ioctl_sparse_bind),
 	KGSL_IOCTL_FUNC(IOCTL_KGSL_GPU_SPARSE_COMMAND,
 			kgsl_ioctl_gpu_sparse_command),
+	KGSL_IOCTL_FUNC(IOCTL_KGSL_GPU_AUX_COMMAND,
+			kgsl_ioctl_gpu_aux_command),
+	KGSL_IOCTL_FUNC(IOCTL_KGSL_TIMELINE_CREATE,
+			kgsl_ioctl_timeline_create),
+	KGSL_IOCTL_FUNC(IOCTL_KGSL_TIMELINE_WAIT,
+			kgsl_ioctl_timeline_wait),
+	KGSL_IOCTL_FUNC(IOCTL_KGSL_TIMELINE_FENCE_GET,
+			kgsl_ioctl_timeline_fence_get),
+	KGSL_IOCTL_FUNC(IOCTL_KGSL_TIMELINE_QUERY,
+			kgsl_ioctl_timeline_query),
+	KGSL_IOCTL_FUNC(IOCTL_KGSL_TIMELINE_SIGNAL,
+			kgsl_ioctl_timeline_signal),
+	KGSL_IOCTL_FUNC(IOCTL_KGSL_TIMELINE_DESTROY,
+			kgsl_ioctl_timeline_destroy),
 };
 
 long kgsl_ioctl_copy_in(unsigned int kernel_cmd, unsigned int user_cmd,
@@ -145,7 +142,12 @@ long kgsl_ioctl_helper(struct file *filep, unsigned int cmd, unsigned long arg,
 	if (nr >= len || cmds[nr].func == NULL)
 		return -ENOIOCTLCMD;
 
-	BUG_ON(_IOC_SIZE(cmds[nr].cmd) > sizeof(data));
+	if (_IOC_SIZE(cmds[nr].cmd) > sizeof(data)) {
+		dev_err_ratelimited(dev_priv->device->dev,
+			"data too big for ioctl 0x%08x: %d/%zu\n",
+			cmd, _IOC_SIZE(cmds[nr].cmd), sizeof(data));
+		return -EINVAL;
+	}
 
 	if (_IOC_SIZE(cmds[nr].cmd)) {
 		ret = kgsl_ioctl_copy_in(cmds[nr].cmd, cmd, arg, data);
@@ -161,11 +163,17 @@ long kgsl_ioctl_helper(struct file *filep, unsigned int cmd, unsigned long arg,
 	return ret;
 }
 
-long kgsl_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
+static long __kgsl_ioctl(struct file *filep, unsigned int cmd,
+			 unsigned long arg)
 {
 	struct kgsl_device_private *dev_priv = filep->private_data;
 	struct kgsl_device *device = dev_priv->device;
+	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
 	long ret;
+
+	if (cmd == IOCTL_KGSL_GPU_COMMAND &&
+	    READ_ONCE(device->state) != KGSL_STATE_ACTIVE)
+		kgsl_schedule_work(&adreno_dev->pwr_on_work);
 
 	ret = kgsl_ioctl_helper(filep, cmd, arg, kgsl_ioctl_funcs,
 		ARRAY_SIZE(kgsl_ioctl_funcs));
@@ -180,9 +188,31 @@ long kgsl_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 			return device->ftbl->compat_ioctl(dev_priv, cmd, arg);
 		else if (device->ftbl->ioctl != NULL)
 			return device->ftbl->ioctl(dev_priv, cmd, arg);
-
-		KGSL_DRV_INFO(device, "invalid ioctl code 0x%08X\n", cmd);
 	}
+
+	return ret;
+}
+
+long kgsl_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
+{
+	struct cpumask qos_cpus;
+	struct pm_qos_request req;
+	long ret;
+	/*
+	 * Optimistically assume the current task won't migrate to another CPU
+	 * and restrict the current CPU to shallow idle states so that it won't
+	 * take too long to finish running the ioctl whenever the ioctl runs a
+	 * command that sleeps, such as for memory allocation.
+	 */
+	cpumask_copy(&qos_cpus, cpumask_of(raw_smp_processor_id()));
+	req = (typeof(req)){
+		.type = PM_QOS_REQ_AFFINE_CORES,
+		.cpus_affine = qos_cpus,
+	};
+
+	pm_qos_add_request(&req, PM_QOS_CPU_DMA_LATENCY, 100);
+	ret = __kgsl_ioctl(filep, cmd, arg);
+	pm_qos_remove_request(&req);
 
 	return ret;
 }

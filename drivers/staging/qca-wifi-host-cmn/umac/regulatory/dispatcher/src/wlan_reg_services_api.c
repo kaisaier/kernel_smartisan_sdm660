@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2017-2019 The Linux Foundation. All rights reserved.
  *
  *
  * Permission to use, copy, modify, and/or distribute this software for
@@ -25,10 +25,21 @@
 
 #include <qdf_status.h>
 #include <qdf_types.h>
+#include <wlan_cmn.h>
+#include <reg_services_public_struct.h>
 #include <wlan_reg_services_api.h>
-#include "../../core/src/reg_services.h"
-#include "../../core/src/reg_priv.h"
+#include <wlan_objmgr_psoc_obj.h>
+#include <wlan_objmgr_pdev_obj.h>
+#include "../../core/src/reg_priv_objs.h"
+#include "../../core/src/reg_utils.h"
+#include "../../core/src/reg_services_common.h"
+#include "../../core/src/reg_db.h"
 #include "../../core/src/reg_db_parser.h"
+#include <../../core/src/reg_build_chan_list.h>
+#include <../../core/src/reg_opclass.h>
+#include <../../core/src/reg_callbacks.h>
+#include <../../core/src/reg_offload_11d_scan.h>
+#include <wlan_objmgr_global_obj.h>
 
 /**
  * wlan_reg_get_channel_list_with_power() - Provide the channel list with power
@@ -243,6 +254,12 @@ uint16_t wlan_reg_dmn_get_opclass_from_channel(uint8_t *country,
 						offset);
 }
 
+void wlan_reg_dmn_print_channels_in_opclass(uint8_t *country,
+					    uint8_t opclass)
+{
+	reg_dmn_print_channels_in_opclass(country, opclass);
+}
+
 uint16_t wlan_reg_dmn_get_chanwidth_from_opclass(uint8_t *country,
 						 uint8_t channel,
 						 uint8_t opclass)
@@ -399,6 +416,16 @@ QDF_STATUS regulatory_pdev_open(struct wlan_objmgr_pdev *pdev)
 {
 	struct wlan_objmgr_psoc *parent_psoc;
 	QDF_STATUS status;
+	struct wlan_regulatory_pdev_priv_obj *pdev_priv_obj;
+
+	pdev_priv_obj = reg_get_pdev_obj(pdev);
+
+	if (!IS_VALID_PDEV_REG_OBJ(pdev_priv_obj)) {
+		reg_err("reg pdev private obj is NULL");
+		return QDF_STATUS_E_FAILURE;
+	}
+
+	pdev_priv_obj->pdev_opened = true;
 
 	parent_psoc = wlan_pdev_get_psoc(pdev);
 
@@ -414,6 +441,15 @@ QDF_STATUS regulatory_pdev_close(struct wlan_objmgr_pdev *pdev)
 {
 	struct wlan_objmgr_psoc *psoc;
 	struct wlan_regulatory_psoc_priv_obj *soc_reg;
+	struct wlan_regulatory_pdev_priv_obj *pdev_priv_obj;
+
+	pdev_priv_obj = reg_get_pdev_obj(pdev);
+	if (!IS_VALID_PDEV_REG_OBJ(pdev_priv_obj)) {
+		reg_err("reg pdev private obj is NULL");
+		return QDF_STATUS_E_FAILURE;
+	}
+
+	pdev_priv_obj->pdev_opened = false;
 
 	psoc = wlan_pdev_get_psoc(pdev);
 	soc_reg = reg_get_psoc_obj(psoc);
@@ -431,6 +467,13 @@ void wlan_reg_update_nol_ch(struct wlan_objmgr_pdev *pdev, uint8_t *ch_list,
 		uint8_t num_ch, bool nol_ch)
 {
 	reg_update_nol_ch(pdev, ch_list, num_ch, nol_ch);
+}
+
+void wlan_reg_update_nol_history_ch(struct wlan_objmgr_pdev *pdev,
+				    uint8_t *ch_list, uint8_t num_ch,
+				    bool nol_history_ch)
+{
+	reg_update_nol_history_ch(pdev, ch_list, num_ch, nol_history_ch);
 }
 
 bool wlan_reg_is_dfs_ch(struct wlan_objmgr_pdev *pdev,
@@ -463,6 +506,12 @@ uint32_t wlan_reg_chan_to_freq(struct wlan_objmgr_pdev *pdev,
 	return reg_chan_to_freq(pdev, chan_num);
 }
 
+uint16_t wlan_reg_legacy_chan_to_freq(struct wlan_objmgr_pdev *pdev,
+				      uint8_t chan_num)
+{
+	return reg_legacy_chan_to_freq(pdev, chan_num);
+}
+
 bool wlan_reg_chan_is_49ghz(struct wlan_objmgr_pdev *pdev,
 		uint8_t chan_num)
 {
@@ -492,22 +541,23 @@ bool wlan_reg_is_us(uint8_t *country)
 }
 
 void wlan_reg_register_chan_change_callback(struct wlan_objmgr_psoc *psoc,
-					    reg_chan_change_callback cbk,
-					    void *arg)
+					    void *cbk, void *arg)
 {
-	reg_register_chan_change_callback(psoc, cbk, arg);
+	reg_register_chan_change_callback(psoc, (reg_chan_change_callback)cbk,
+					  arg);
 
 }
 
 void wlan_reg_unregister_chan_change_callback(struct wlan_objmgr_psoc *psoc,
-					      reg_chan_change_callback cbk)
+					      void *cbk)
 {
-	reg_unregister_chan_change_callback(psoc, cbk);
+	reg_unregister_chan_change_callback(psoc,
+					    (reg_chan_change_callback)cbk);
 }
 
-bool wlan_reg_11d_original_enabled_on_host(struct wlan_objmgr_psoc *psoc)
+bool wlan_reg_is_11d_offloaded(struct wlan_objmgr_psoc *psoc)
 {
-	return reg_11d_original_enabled_on_host(psoc);
+	return reg_is_11d_offloaded(psoc);
 }
 
 bool wlan_reg_11d_enabled_on_host(struct wlan_objmgr_psoc *psoc)
@@ -550,7 +600,7 @@ QDF_STATUS wlan_reg_get_chip_mode(struct wlan_objmgr_pdev *pdev,
 	pdev_priv_obj = wlan_objmgr_pdev_get_comp_private_obj(pdev,
 			WLAN_UMAC_COMP_REGULATORY);
 
-	if (NULL == pdev_priv_obj) {
+	if (!pdev_priv_obj) {
 		reg_err("reg pdev private obj is NULL");
 		return QDF_STATUS_E_FAULT;
 	}
@@ -576,7 +626,7 @@ QDF_STATUS wlan_reg_get_freq_range(struct wlan_objmgr_pdev *pdev,
 	pdev_priv_obj = wlan_objmgr_pdev_get_comp_private_obj(pdev,
 			WLAN_UMAC_COMP_REGULATORY);
 
-	if (NULL == pdev_priv_obj) {
+	if (!pdev_priv_obj) {
 		reg_err("reg pdev private obj is NULL");
 		return QDF_STATUS_E_FAULT;
 	}
@@ -599,4 +649,98 @@ QDF_STATUS wlan_reg_get_curr_regdomain(struct wlan_objmgr_pdev *pdev,
 		struct cur_regdmn_info *cur_regdmn)
 {
 	return reg_get_curr_regdomain(pdev, cur_regdmn);
+}
+
+uint32_t wlan_reg_min_24ghz_ch_num(void)
+{
+	return reg_min_24ghz_ch_num();
+}
+
+uint32_t wlan_reg_max_24ghz_ch_num(void)
+{
+	return reg_max_24ghz_ch_num();
+}
+
+uint32_t wlan_reg_min_5ghz_ch_num(void)
+{
+	return reg_min_5ghz_ch_num();
+}
+
+uint32_t wlan_reg_max_5ghz_ch_num(void)
+{
+	return reg_max_5ghz_ch_num();
+}
+
+bool wlan_reg_is_24ghz_ch(uint32_t chan)
+{
+	return reg_is_24ghz_ch(chan);
+}
+
+bool wlan_reg_is_5ghz_ch(uint32_t chan)
+{
+	return reg_is_5ghz_ch(chan);
+}
+
+bool wlan_reg_is_24ghz_ch_freq(uint32_t freq)
+{
+	return reg_is_24ghz_ch_freq(freq);
+}
+
+bool wlan_reg_is_5ghz_ch_freq(uint32_t freq)
+{
+	return reg_is_5ghz_ch_freq(freq);
+}
+
+#ifndef CONFIG_LEGACY_CHAN_ENUM
+bool wlan_reg_is_49ghz_freq(uint32_t freq)
+{
+	return reg_is_49ghz_freq(freq);
+}
+#endif
+
+uint32_t wlan_reg_ch_num(uint32_t ch_enum)
+{
+	return reg_ch_num(ch_enum);
+}
+
+uint32_t wlan_reg_ch_to_freq(uint32_t ch_enum)
+{
+	return reg_ch_to_freq(ch_enum);
+}
+
+bool wlan_reg_is_same_band_channels(uint32_t chan_num1, uint32_t chan_num2)
+{
+	return reg_is_same_band_channels(chan_num1, chan_num2);
+}
+
+bool wlan_reg_is_channel_valid_5g_sbs(uint32_t curchan, uint32_t newchan)
+{
+	return reg_is_channel_valid_5g_sbs(curchan, newchan);
+}
+
+enum band_info wlan_reg_chan_to_band(uint32_t chan_num)
+{
+	return reg_chan_to_band(chan_num);
+}
+
+/**
+ * wlan_reg_get_chan_enum() - Get channel enum for given channel number
+ * @chan_num: Channel number
+ *
+ * Return: Channel enum
+ */
+enum channel_enum wlan_reg_get_chan_enum(uint32_t chan_num)
+{
+	return reg_get_chan_enum(chan_num);
+}
+
+bool wlan_reg_is_6ghz_op_class(struct wlan_objmgr_pdev *pdev,
+			       uint8_t op_class)
+{
+	return reg_is_6ghz_op_class(pdev, op_class);
+}
+
+bool wlan_reg_is_6ghz_supported(struct wlan_objmgr_pdev *pdev)
+{
+	return reg_is_6ghz_supported(pdev);
 }

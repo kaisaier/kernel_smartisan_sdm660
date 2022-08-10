@@ -1,3 +1,16 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 and
+ * only version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ */
+
 #ifndef __LINUX_MSM_CAM_SENSOR_H
 #define __LINUX_MSM_CAM_SENSOR_H
 
@@ -41,9 +54,7 @@ struct msm_camera_sensor_slave_info32 {
 	uint8_t  is_init_params_valid;
 	struct msm_sensor_init_params sensor_init_params;
 	enum msm_sensor_output_format_t output_format;
-#ifndef CONFIG_VENDOR_SMARTISAN
 	uint8_t bypass_video_node_creation;
-#endif
 };
 
 struct msm_camera_csid_lut_params32 {
@@ -109,9 +120,6 @@ struct msm_eeprom_info_t32 {
 	compat_uptr_t power_setting_array;
 	enum i2c_freq_mode_t i2c_freq_mode;
 	compat_uptr_t mem_map_array;
-#ifdef CONFIG_VENDOR_SMARTISAN
-	compat_uptr_t write_map_array; // JiGaoping add for write data to eeprom 2016-12-02
-#endif
 };
 
 struct msm_eeprom_cfg_data32 {

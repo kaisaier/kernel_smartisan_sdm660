@@ -15,9 +15,9 @@
 
 #include <linux/cpufreq.h>
 #include <linux/cpufreq_times.h>
-#include <linux/cputime.h>
 #include <linux/hashtable.h>
 #include <linux/init.h>
+#include <linux/jiffies.h>
 #include <linux/proc_fs.h>
 #include <linux/sched.h>
 #include <linux/seq_file.h>
@@ -27,7 +27,7 @@
 
 #define UID_HASH_BITS 10
 
-DECLARE_HASHTABLE(uid_hash_table, UID_HASH_BITS);
+static DECLARE_HASHTABLE(uid_hash_table, UID_HASH_BITS);
 
 static DEFINE_SPINLOCK(task_time_in_state_lock); /* task->time_in_state */
 static DEFINE_SPINLOCK(uid_lock); /* uid_hash_table */
@@ -137,27 +137,10 @@ static struct uid_entry *find_or_register_uid_locked(uid_t uid)
 	return uid_entry;
 }
 
-static bool freq_index_invalid(unsigned int index)
-{
-	unsigned int cpu;
-	struct cpu_freqs *freqs;
-
-	for_each_possible_cpu(cpu) {
-		freqs = all_freqs[cpu];
-		if (!freqs || index < freqs->offset ||
-		    freqs->offset + freqs->max_state <= index)
-			continue;
-		return freqs->freq_table[index - freqs->offset] ==
-			CPUFREQ_ENTRY_INVALID;
-	}
-	return true;
-}
-
 static int single_uid_time_in_state_show(struct seq_file *m, void *ptr)
 {
 	struct uid_entry *uid_entry;
 	unsigned int i;
-	u64 time;
 	uid_t uid = from_kuid_munged(current_user_ns(), *(kuid_t *)m->private);
 
 	if (uid == overflowuid)
@@ -172,9 +155,7 @@ static int single_uid_time_in_state_show(struct seq_file *m, void *ptr)
 	}
 
 	for (i = 0; i < uid_entry->max_state; ++i) {
-		if (freq_index_invalid(i))
-			continue;
-		time = cputime_to_clock_t(uid_entry->time_in_state[i]);
+		u64 time = nsec_to_clock_t(uid_entry->time_in_state[i]);
 		seq_write(m, &time, sizeof(time));
 	}
 
@@ -193,10 +174,12 @@ static void *uid_seq_start(struct seq_file *seq, loff_t *pos)
 
 static void *uid_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 {
-	(*pos)++;
+	do {
+		(*pos)++;
 
-	if (*pos >= HASH_SIZE(uid_hash_table))
-		return NULL;
+		if (*pos >= HASH_SIZE(uid_hash_table))
+			return NULL;
+	} while (hlist_empty(&uid_hash_table[*pos]));
 
 	return &uid_hash_table[*pos];
 }
@@ -217,10 +200,8 @@ static int uid_time_in_state_seq_show(struct seq_file *m, void *v)
 				continue;
 			last_freqs = freqs;
 			for (i = 0; i < freqs->max_state; i++) {
-				if (freqs->freq_table[i] ==
-				    CPUFREQ_ENTRY_INVALID)
-					continue;
-				seq_printf(m, " %d", freqs->freq_table[i]);
+				seq_put_decimal_ull(m, " ",
+						    freqs->freq_table[i]);
 			}
 		}
 		seq_putc(m, '\n');
@@ -229,13 +210,13 @@ static int uid_time_in_state_seq_show(struct seq_file *m, void *v)
 	rcu_read_lock();
 
 	hlist_for_each_entry_rcu(uid_entry, (struct hlist_head *)v, hash) {
-		if (uid_entry->max_state)
-			seq_printf(m, "%d:", uid_entry->uid);
+		if (uid_entry->max_state) {
+			seq_put_decimal_ull(m, "", uid_entry->uid);
+			seq_putc(m, ':');
+		}
 		for (i = 0; i < uid_entry->max_state; ++i) {
-			if (freq_index_invalid(i))
-				continue;
-			seq_printf(m, " %lu", (unsigned long)cputime_to_clock_t(
-					   uid_entry->time_in_state[i]));
+			u64 time = nsec_to_clock_t(uid_entry->time_in_state[i]);
+			seq_put_decimal_ull(m, " ", time);
 		}
 		if (uid_entry->max_state)
 			seq_putc(m, '\n');
@@ -256,13 +237,13 @@ static int concurrent_time_seq_show(struct seq_file *m, void *v,
 	hlist_for_each_entry_rcu(uid_entry, (struct hlist_head *)v, hash) {
 		atomic64_t *times = get_times(uid_entry->concurrent_times);
 
-		seq_put_decimal_ull(m, 0, (u64)uid_entry->uid);
+		seq_put_decimal_ull(m, "", (u64)uid_entry->uid);
 		seq_putc(m, ':');
 
 		for (i = 0; i < num_possible_cpus; ++i) {
-			u64 time = cputime_to_clock_t(atomic64_read(&times[i]));
+			u64 time = nsec_to_clock_t(atomic64_read(&times[i]));
 
-			seq_put_decimal_ull(m, ' ', time);
+			seq_put_decimal_ull(m, " ", time);
 		}
 		seq_putc(m, '\n');
 	}
@@ -280,7 +261,7 @@ static inline atomic64_t *get_active_times(struct concurrent_times *times)
 static int concurrent_active_time_seq_show(struct seq_file *m, void *v)
 {
 	if (v == uid_hash_table) {
-		seq_printf(m, "cpus: %d", num_possible_cpus());
+		seq_put_decimal_ull(m, "cpus: ", num_possible_cpus());
 		seq_putc(m, '\n');
 	}
 
@@ -306,18 +287,18 @@ static int concurrent_policy_time_seq_show(struct seq_file *m, void *v)
 				continue;
 			if (freqs != last_freqs) {
 				if (last_freqs) {
-					seq_printf(m, ": %d", cnt);
+					seq_put_decimal_ull(m, ": ", cnt);
 					seq_putc(m, ' ');
 					cnt = 0;
 				}
-				seq_printf(m, "policy%d", i);
+				seq_put_decimal_ull(m, "policy", i);
 
 				last_freqs = freqs;
 			}
 			cnt++;
 		}
 		if (last_freqs) {
-			seq_printf(m, ": %d", cnt);
+			seq_put_decimal_ull(m, ": ", cnt);
 			seq_putc(m, '\n');
 		}
 	}
@@ -326,16 +307,6 @@ static int concurrent_policy_time_seq_show(struct seq_file *m, void *v)
 }
 
 void cpufreq_task_times_init(struct task_struct *p)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&task_time_in_state_lock, flags);
-	p->time_in_state = NULL;
-	spin_unlock_irqrestore(&task_time_in_state_lock, flags);
-	p->max_state = 0;
-}
-
-void cpufreq_task_times_alloc(struct task_struct *p)
 {
 	void *temp;
 	unsigned long flags;
@@ -387,7 +358,7 @@ int proc_time_in_state_show(struct seq_file *m, struct pid_namespace *ns,
 	struct pid *pid, struct task_struct *p)
 {
 	unsigned int cpu, i;
-	cputime_t cputime;
+	u64 cputime;
 	unsigned long flags;
 	struct cpu_freqs *freqs;
 	struct cpu_freqs *last_freqs = NULL;
@@ -401,21 +372,19 @@ int proc_time_in_state_show(struct seq_file *m, struct pid_namespace *ns,
 
 		seq_printf(m, "cpu%u\n", cpu);
 		for (i = 0; i < freqs->max_state; i++) {
-			if (freqs->freq_table[i] == CPUFREQ_ENTRY_INVALID)
-				continue;
 			cputime = 0;
 			if (freqs->offset + i < p->max_state &&
 			    p->time_in_state)
 				cputime = p->time_in_state[freqs->offset + i];
 			seq_printf(m, "%u %lu\n", freqs->freq_table[i],
-				   (unsigned long)cputime_to_clock_t(cputime));
+				   (unsigned long)nsec_to_clock_t(cputime));
 		}
 	}
 	spin_unlock_irqrestore(&task_time_in_state_lock, flags);
 	return 0;
 }
 
-void cpufreq_acct_update_power(struct task_struct *p, cputime_t cputime)
+void cpufreq_acct_update_power(struct task_struct *p, u64 cputime)
 {
 	unsigned long flags;
 	unsigned int state;
@@ -482,9 +451,19 @@ void cpufreq_acct_update_power(struct task_struct *p, cputime_t cputime)
 	rcu_read_unlock();
 }
 
+static int cpufreq_times_get_index(struct cpu_freqs *freqs, unsigned int freq)
+{
+	int index;
+        for (index = 0; index < freqs->max_state; ++index) {
+		if (freqs->freq_table[index] == freq)
+			return index;
+        }
+	return -1;
+}
+
 void cpufreq_times_create_policy(struct cpufreq_policy *policy)
 {
-	int cpu, index;
+	int cpu, index = 0;
 	unsigned int count = 0;
 	struct cpufreq_frequency_table *pos, *table;
 	struct cpu_freqs *freqs;
@@ -493,11 +472,11 @@ void cpufreq_times_create_policy(struct cpufreq_policy *policy)
 	if (all_freqs[policy->cpu])
 		return;
 
-	table = cpufreq_frequency_get_table(policy->cpu);
+	table = policy->freq_table;
 	if (!table)
 		return;
 
-	cpufreq_for_each_entry(pos, table)
+	cpufreq_for_each_valid_entry(pos, table)
 		count++;
 
 	tmp =  kzalloc(sizeof(*freqs) + sizeof(freqs->freq_table[0]) * count,
@@ -508,12 +487,12 @@ void cpufreq_times_create_policy(struct cpufreq_policy *policy)
 	freqs = tmp;
 	freqs->max_state = count;
 
-	index = cpufreq_frequency_table_get_index(policy, policy->cur);
+	cpufreq_for_each_valid_entry(pos, table)
+		freqs->freq_table[index++] = pos->frequency;
+
+	index = cpufreq_times_get_index(freqs, policy->cur);
 	if (index >= 0)
 		WRITE_ONCE(freqs->last_index, index);
-
-	cpufreq_for_each_entry(pos, table)
-		freqs->freq_table[pos - table] = pos->frequency;
 
 	freqs->offset = next_offset;
 	WRITE_ONCE(next_offset, freqs->offset + count);
@@ -534,13 +513,14 @@ void cpufreq_task_times_remove_uids(uid_t uid_start, uid_t uid_end)
 	struct uid_entry *uid_entry;
 	struct hlist_node *tmp;
 	unsigned long flags;
+	u64 uid;
 
 	spin_lock_irqsave(&uid_lock, flags);
 
-	for (; uid_start <= uid_end; uid_start++) {
+	for (uid = uid_start; uid <= uid_end; uid++) {
 		hash_for_each_possible_safe(uid_hash_table, uid_entry, tmp,
-			hash, uid_start) {
-			if (uid_start == uid_entry->uid) {
+			hash, uid) {
+			if (uid == uid_entry->uid) {
 				hash_del_rcu(&uid_entry->hash);
 				call_rcu(&uid_entry->rcu, uid_entry_reclaim);
 			}
@@ -550,24 +530,17 @@ void cpufreq_task_times_remove_uids(uid_t uid_start, uid_t uid_end)
 	spin_unlock_irqrestore(&uid_lock, flags);
 }
 
-void cpufreq_times_record_transition(struct cpufreq_freqs *freq)
+void cpufreq_times_record_transition(struct cpufreq_policy *policy,
+	unsigned int new_freq)
 {
 	int index;
-	struct cpu_freqs *freqs = all_freqs[freq->cpu];
-	struct cpufreq_policy *policy;
-
+	struct cpu_freqs *freqs = all_freqs[policy->cpu];
 	if (!freqs)
 		return;
 
-	policy = cpufreq_cpu_get(freq->cpu);
-	if (!policy)
-		return;
-
-	index = cpufreq_frequency_table_get_index(policy, freq->new);
+	index = cpufreq_times_get_index(freqs, new_freq);
 	if (index >= 0)
 		WRITE_ONCE(freqs->last_index, index);
-
-	cpufreq_cpu_put(policy);
 }
 
 static const struct seq_operations uid_time_in_state_seq_ops = {

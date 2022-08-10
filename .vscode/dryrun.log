@@ -1,0 +1,97 @@
+make --dry-run --always-make --keep-going --print-directory
+make: Entering directory '/home/caesar/github/kernel_smartisan_sdm660'
+ 
+  HOSTCC  scripts/basic/fixdep
+ 
+  HOSTCC  scripts/kconfig/conf.o
+ 
+  SHIPPED scripts/kconfig/zconf.tab.c
+ 
+  SHIPPED scripts/kconfig/zconf.lex.c
+ 
+  SHIPPED scripts/kconfig/zconf.hash.c
+ 
+  HOSTCC  scripts/kconfig/zconf.tab.o
+ 
+  HOSTLD  scripts/kconfig/conf
+ 
+scripts/kconfig/conf  --silentoldconfig Kconfig
+ 
+***
+*** Configuration file ".config" not found!
+***
+*** Please run some configurator (e.g. "make oldconfig" or
+*** "make menuconfig" or "make xconfig").
+***
+
+make[2]: *** [scripts/kconfig/Makefile:38: silentoldconfig] Error 1
+
+make[1]: *** [Makefile:544: silentoldconfig] Error 2
+
+make -f ./scripts/Makefile.build obj=arch/x86/entry/syscalls all
+ 
+set -e;  echo '  SYSTBL  arch/x86/entry/syscalls/../../include/generated/asm/syscalls_32.h'; /bin/bash './arch/x86/entry/syscalls/syscalltbl.sh' arch/x86/entry/syscalls/syscall_32.tbl arch/x86/entry/syscalls/../../include/generated/asm/syscalls_32.h; printf '%s\n' 'cmd_arch/x86/entry/syscalls/../../include/generated/asm/syscalls_32.h := /bin/bash '\''./arch/x86/entry/syscalls/syscalltbl.sh'\'' arch/x86/entry/syscalls/syscall_32.tbl arch/x86/entry/syscalls/../../include/generated/asm/syscalls_32.h' > arch/x86/entry/syscalls/../../include/generated/asm/.syscalls_32.h.cmd
+set -e;  echo '  SYSHDR  arch/x86/entry/syscalls/../../include/generated/uapi/asm/unistd_32.h'; /bin/bash './arch/x86/entry/syscalls/syscallhdr.sh' 'arch/x86/entry/syscalls/syscall_32.tbl' 'arch/x86/entry/syscalls/../../include/generated/uapi/asm/unistd_32.h' 'i386' '' ''; printf '%s\n' 'cmd_arch/x86/entry/syscalls/../../include/generated/uapi/asm/unistd_32.h := /bin/bash '\''./arch/x86/entry/syscalls/syscallhdr.sh'\'' '\''arch/x86/entry/syscalls/syscall_32.tbl'\'' '\''arch/x86/entry/syscalls/../../include/generated/uapi/asm/unistd_32.h'\'' '\''i386'\'' '\'''\'' '\'''\''' > arch/x86/entry/syscalls/../../include/generated/uapi/asm/.unistd_32.h.cmd
+set -e;  echo '  SYSHDR  arch/x86/entry/syscalls/../../include/generated/uapi/asm/unistd_64.h'; /bin/bash './arch/x86/entry/syscalls/syscallhdr.sh' 'arch/x86/entry/syscalls/syscall_64.tbl' 'arch/x86/entry/syscalls/../../include/generated/uapi/asm/unistd_64.h' 'common,64' '' ''; printf '%s\n' 'cmd_arch/x86/entry/syscalls/../../include/generated/uapi/asm/unistd_64.h := /bin/bash '\''./arch/x86/entry/syscalls/syscallhdr.sh'\'' '\''arch/x86/entry/syscalls/syscall_64.tbl'\'' '\''arch/x86/entry/syscalls/../../include/generated/uapi/asm/unistd_64.h'\'' '\''common,64'\'' '\'''\'' '\'''\''' > arch/x86/entry/syscalls/../../include/generated/uapi/asm/.unistd_64.h.cmd
+set -e;  echo '  SYSHDR  arch/x86/entry/syscalls/../../include/generated/uapi/asm/unistd_x32.h'; /bin/bash './arch/x86/entry/syscalls/syscallhdr.sh' 'arch/x86/entry/syscalls/syscall_64.tbl' 'arch/x86/entry/syscalls/../../include/generated/uapi/asm/unistd_x32.h' 'common,x32' '' '__X32_SYSCALL_BIT'; printf '%s\n' 'cmd_arch/x86/entry/syscalls/../../include/generated/uapi/asm/unistd_x32.h := /bin/bash '\''./arch/x86/entry/syscalls/syscallhdr.sh'\'' '\''arch/x86/entry/syscalls/syscall_64.tbl'\'' '\''arch/x86/entry/syscalls/../../include/generated/uapi/asm/unistd_x32.h'\'' '\''common,x32'\'' '\'''\'' '\''__X32_SYSCALL_BIT'\''' > arch/x86/entry/syscalls/../../include/generated/uapi/asm/.unistd_x32.h.cmd
+:
+ 
+make -f ./scripts/Makefile.build obj=scripts/basic
+ 
+(cat /dev/null; ) > scripts/basic/modules.order
+ 
+set -e;  echo '  HOSTCC  scripts/basic/fixdep'; gcc -Wp,-MD,scripts/basic/.fixdep.d -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89     -o scripts/basic/fixdep scripts/basic/fixdep.c  ; scripts/basic/fixdep scripts/basic/.fixdep.d scripts/basic/fixdep 'gcc -Wp,-MD,scripts/basic/.fixdep.d -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89     -o scripts/basic/fixdep scripts/basic/fixdep.c  ' > scripts/basic/.fixdep.tmp; rm -f scripts/basic/.fixdep.d; mv -f scripts/basic/.fixdep.tmp scripts/basic/.fixdep.cmd
+:
+ 
+rm -f .tmp_quiet_recordmcount
+make -f ./scripts/Makefile.build obj=arch/x86/tools relocs
+ 
+set -e;  echo '  HOSTCC  arch/x86/tools/relocs_32.o'; gcc -Wp,-MD,arch/x86/tools/.relocs_32.o.d -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89   -I./tools/include  -c -o arch/x86/tools/relocs_32.o arch/x86/tools/relocs_32.c; scripts/basic/fixdep arch/x86/tools/.relocs_32.o.d arch/x86/tools/relocs_32.o 'gcc -Wp,-MD,arch/x86/tools/.relocs_32.o.d -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89   -I./tools/include  -c -o arch/x86/tools/relocs_32.o arch/x86/tools/relocs_32.c' > arch/x86/tools/.relocs_32.o.tmp; rm -f arch/x86/tools/.relocs_32.o.d; mv -f arch/x86/tools/.relocs_32.o.tmp arch/x86/tools/.relocs_32.o.cmd
+ 
+set -e;  echo '  HOSTCC  arch/x86/tools/relocs_64.o'; gcc -Wp,-MD,arch/x86/tools/.relocs_64.o.d -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89   -I./tools/include  -c -o arch/x86/tools/relocs_64.o arch/x86/tools/relocs_64.c; scripts/basic/fixdep arch/x86/tools/.relocs_64.o.d arch/x86/tools/relocs_64.o 'gcc -Wp,-MD,arch/x86/tools/.relocs_64.o.d -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89   -I./tools/include  -c -o arch/x86/tools/relocs_64.o arch/x86/tools/relocs_64.c' > arch/x86/tools/.relocs_64.o.tmp; rm -f arch/x86/tools/.relocs_64.o.d; mv -f arch/x86/tools/.relocs_64.o.tmp arch/x86/tools/.relocs_64.o.cmd
+set -e;  echo '  HOSTCC  arch/x86/tools/relocs_common.o'; gcc -Wp,-MD,arch/x86/tools/.relocs_common.o.d -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89   -I./tools/include  -c -o arch/x86/tools/relocs_common.o arch/x86/tools/relocs_common.c; scripts/basic/fixdep arch/x86/tools/.relocs_common.o.d arch/x86/tools/relocs_common.o 'gcc -Wp,-MD,arch/x86/tools/.relocs_common.o.d -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89   -I./tools/include  -c -o arch/x86/tools/relocs_common.o arch/x86/tools/relocs_common.c' > arch/x86/tools/.relocs_common.o.tmp; rm -f arch/x86/tools/.relocs_common.o.d; mv -f arch/x86/tools/.relocs_common.o.tmp arch/x86/tools/.relocs_common.o.cmd
+ 
+set -e;  echo '  HOSTLD  arch/x86/tools/relocs'; gcc  -o arch/x86/tools/relocs arch/x86/tools/relocs_32.o arch/x86/tools/relocs_64.o arch/x86/tools/relocs_common.o  ; printf '%s\n' 'cmd_arch/x86/tools/relocs := gcc  -o arch/x86/tools/relocs arch/x86/tools/relocs_32.o arch/x86/tools/relocs_64.o arch/x86/tools/relocs_common.o  ' > arch/x86/tools/.relocs.cmd
+:
+ 
+make: *** No rule to make target 'include/config/auto.conf', needed by 'include/config/kernel.release'.
+
+make -f ./scripts/Makefile.asm-generic \
+            src=asm obj=arch/x86/include/generated/asm
+ 
+echo '  WRAP    arch/x86/include/generated/asm/clkdev.h'; echo "#include <asm-generic/clkdev.h>" >arch/x86/include/generated/asm/clkdev.h
+echo '  WRAP    arch/x86/include/generated/asm/cputime.h'; echo "#include <asm-generic/cputime.h>" >arch/x86/include/generated/asm/cputime.h
+echo '  WRAP    arch/x86/include/generated/asm/dma-contiguous.h'; echo "#include <asm-generic/dma-contiguous.h>" >arch/x86/include/generated/asm/dma-contiguous.h
+echo '  WRAP    arch/x86/include/generated/asm/early_ioremap.h'; echo "#include <asm-generic/early_ioremap.h>" >arch/x86/include/generated/asm/early_ioremap.h
+echo '  WRAP    arch/x86/include/generated/asm/mcs_spinlock.h'; echo "#include <asm-generic/mcs_spinlock.h>" >arch/x86/include/generated/asm/mcs_spinlock.h
+echo '  WRAP    arch/x86/include/generated/asm/mm-arch-hooks.h'; echo "#include <asm-generic/mm-arch-hooks.h>" >arch/x86/include/generated/asm/mm-arch-hooks.h
+:
+ 
+make -f ./scripts/Makefile.asm-generic \
+            src=uapi/asm obj=arch/x86/include/generated/uapi/asm
+ 
+:
+ 
+set -e; echo '  CHK     include/generated/uapi/linux/version.h'; mkdir -p include/generated/uapi/linux/; 	(echo \#define LINUX_VERSION_CODE 263361; echo '#define KERNEL_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))';) < Makefile > include/generated/uapi/linux/version.h.tmp; if [ -r include/generated/uapi/linux/version.h ] && cmp -s include/generated/uapi/linux/version.h include/generated/uapi/linux/version.h.tmp; then rm -f include/generated/uapi/linux/version.h.tmp; else echo '  UPD     include/generated/uapi/linux/version.h'; mv -f include/generated/uapi/linux/version.h.tmp include/generated/uapi/linux/version.h; fi
+rm -f include/linux/version.h
+make -f ./Makefile silentoldconfig
+ 
+make -f ./scripts/Makefile.build obj=scripts/basic
+ 
+set -e;  echo '  HOSTCC  scripts/basic/fixdep'; gcc -Wp,-MD,scripts/basic/.fixdep.d -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89     -o scripts/basic/fixdep scripts/basic/fixdep.c  ; scripts/basic/fixdep scripts/basic/.fixdep.d scripts/basic/fixdep 'gcc -Wp,-MD,scripts/basic/.fixdep.d -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89     -o scripts/basic/fixdep scripts/basic/fixdep.c  ' > scripts/basic/.fixdep.tmp; rm -f scripts/basic/.fixdep.d; mv -f scripts/basic/.fixdep.tmp scripts/basic/.fixdep.cmd
+:
+ 
+rm -f .tmp_quiet_recordmcount
+make -f ./scripts/Makefile.build obj=scripts/kconfig silentoldconfig
+ 
+set -e;  echo '  HOSTCC  scripts/kconfig/conf.o'; gcc -Wp,-MD,scripts/kconfig/.conf.o.d -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89   -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=600 -DCURSES_LOC="<ncurses.h>" -DNCURSES_WIDECHAR=1 -DLOCALE   -c -o scripts/kconfig/conf.o scripts/kconfig/conf.c; scripts/basic/fixdep scripts/kconfig/.conf.o.d scripts/kconfig/conf.o 'gcc -Wp,-MD,scripts/kconfig/.conf.o.d -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89   -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=600 -DCURSES_LOC="<ncurses.h>" -DNCURSES_WIDECHAR=1 -DLOCALE   -c -o scripts/kconfig/conf.o scripts/kconfig/conf.c' > scripts/kconfig/.conf.o.tmp; rm -f scripts/kconfig/.conf.o.d; mv -f scripts/kconfig/.conf.o.tmp scripts/kconfig/.conf.o.cmd
+echo '  SHIPPED scripts/kconfig/zconf.tab.c'; cat scripts/kconfig/zconf.tab.c_shipped > scripts/kconfig/zconf.tab.c
+echo '  SHIPPED scripts/kconfig/zconf.lex.c'; cat scripts/kconfig/zconf.lex.c_shipped > scripts/kconfig/zconf.lex.c
+echo '  SHIPPED scripts/kconfig/zconf.hash.c'; cat scripts/kconfig/zconf.hash.c_shipped > scripts/kconfig/zconf.hash.c
+ 
+set -e;  echo '  HOSTCC  scripts/kconfig/zconf.tab.o'; gcc -Wp,-MD,scripts/kconfig/.zconf.tab.o.d -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89   -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=600 -DCURSES_LOC="<ncurses.h>" -DNCURSES_WIDECHAR=1 -DLOCALE  -Iscripts/kconfig -c -o scripts/kconfig/zconf.tab.o scripts/kconfig/zconf.tab.c; scripts/basic/fixdep scripts/kconfig/.zconf.tab.o.d scripts/kconfig/zconf.tab.o 'gcc -Wp,-MD,scripts/kconfig/.zconf.tab.o.d -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89   -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=600 -DCURSES_LOC="<ncurses.h>" -DNCURSES_WIDECHAR=1 -DLOCALE  -Iscripts/kconfig -c -o scripts/kconfig/zconf.tab.o scripts/kconfig/zconf.tab.c' > scripts/kconfig/.zconf.tab.o.tmp; rm -f scripts/kconfig/.zconf.tab.o.d; mv -f scripts/kconfig/.zconf.tab.o.tmp scripts/kconfig/.zconf.tab.o.cmd
+set -e;  echo '  HOSTLD  scripts/kconfig/conf'; gcc  -o scripts/kconfig/conf scripts/kconfig/conf.o scripts/kconfig/zconf.tab.o  ; printf '%s\n' 'cmd_scripts/kconfig/conf := gcc  -o scripts/kconfig/conf scripts/kconfig/conf.o scripts/kconfig/zconf.tab.o  ' > scripts/kconfig/.conf.cmd
+mkdir -p include/config include/generated
+scripts/kconfig/conf  --silentoldconfig Kconfig
+make: Leaving directory '/home/caesar/github/kernel_smartisan_sdm660'
+ 

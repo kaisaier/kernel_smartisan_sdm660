@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2017-2020 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -33,14 +33,19 @@
 #include "cds_api.h"
 #include <wlan_osif_request_manager.h>
 #include <qdf_mem.h>
+#ifdef WLAN_POWER_DEBUG
 #include <sir_api.h>
+#endif
+#include "osif_sync.h"
+#include <wlan_hdd_sysfs_set_fw_mode_cfg.h>
+#include <wlan_hdd_sysfs_dl_modes.h>
 
 #define MAX_PSOC_ID_SIZE 10
 
 #ifdef MULTI_IF_NAME
 #define DRIVER_NAME MULTI_IF_NAME
 #else
-#define DRIVER_NAME "wlan"
+#define DRIVER_NAME "wifi"
 #endif
 
 static struct kobject *wlan_kobject;
@@ -48,9 +53,29 @@ static struct kobject *driver_kobject;
 static struct kobject *fw_kobject;
 static struct kobject *psoc_kobject;
 
-static ssize_t __show_driver_version(struct kobject *kobj,
-				     struct kobj_attribute *attr,
-				     char *buf)
+int
+hdd_sysfs_validate_and_copy_buf(char *dest_buf, size_t dest_buf_size,
+				char const *source_buf, size_t source_buf_size)
+{
+	if (source_buf_size > (dest_buf_size - 1)) {
+		hdd_err_rl("Command length is larger than %zu bytes",
+			   dest_buf_size);
+		return -EINVAL;
+	}
+
+	/* sysfs already provides kernel space buffer so copy from user
+	 * is not needed. Doing this extra copy operation just to ensure
+	 * the local buf is properly null-terminated.
+	 */
+	strlcpy(dest_buf, source_buf, dest_buf_size);
+	/* default 'echo' cmd takes new line character to here */
+	if (dest_buf[source_buf_size - 1] == '\n')
+		dest_buf[source_buf_size - 1] = '\0';
+
+	return 0;
+}
+
+static ssize_t __show_driver_version(char *buf)
 {
 	return scnprintf(buf, PAGE_SIZE, QWLAN_VERSIONSTR);
 }
@@ -59,27 +84,30 @@ static ssize_t show_driver_version(struct kobject *kobj,
 				   struct kobj_attribute *attr,
 				   char *buf)
 {
-	ssize_t ret_val;
+	struct hdd_context *hdd_ctx = cds_get_context(QDF_MODULE_ID_HDD);
+	struct osif_psoc_sync *psoc_sync;
+	ssize_t length;
+	int errno;
 
-	cds_ssr_protect(__func__);
-	ret_val = __show_driver_version(kobj, attr, buf);
-	cds_ssr_unprotect(__func__);
+	errno = wlan_hdd_validate_context(hdd_ctx);
+	if (errno)
+		return errno;
 
-	return ret_val;
+	errno = osif_psoc_sync_op_start(hdd_ctx->parent_dev, &psoc_sync);
+	if (errno)
+		return errno;
+
+	length = __show_driver_version(buf);
+
+	osif_psoc_sync_op_stop(psoc_sync);
+
+	return length;
 }
 
-static ssize_t __show_fw_version(struct kobject *kobj,
-				 struct kobj_attribute *attr,
+static ssize_t __show_fw_version(struct hdd_context *hdd_ctx,
 				 char *buf)
 {
-	struct hdd_context *hdd_ctx = cds_get_context(QDF_MODULE_ID_HDD);
-	int ret;
-
-	ret = wlan_hdd_validate_context(hdd_ctx);
-	if (ret) {
-		hdd_err("hdd ctx is invalid");
-		return ret;
-	}
+	hdd_debug("Rcvd req for FW version");
 
 	return scnprintf(buf, PAGE_SIZE,
 			 "FW:%d.%d.%d.%d.%d.%d HW:%s Board version: %x Ref design id: %x Customer id: %x Project id: %x Board Data Rev: %x\n",
@@ -101,15 +129,27 @@ static ssize_t show_fw_version(struct kobject *kobj,
 			       struct kobj_attribute *attr,
 			       char *buf)
 {
-	ssize_t ret_val;
+	struct hdd_context *hdd_ctx = cds_get_context(QDF_MODULE_ID_HDD);
+	struct osif_psoc_sync *psoc_sync;
+	ssize_t length;
+	int errno;
 
-	cds_ssr_protect(__func__);
-	ret_val = __show_fw_version(kobj, attr, buf);
-	cds_ssr_unprotect(__func__);
+	errno = wlan_hdd_validate_context(hdd_ctx);
+	if (errno)
+		return errno;
 
-	return ret_val;
+	errno = osif_psoc_sync_op_start(hdd_ctx->parent_dev, &psoc_sync);
+	if (errno)
+		return errno;
+
+	length = __show_fw_version(hdd_ctx, buf);
+
+	osif_psoc_sync_op_stop(psoc_sync);
+
+	return length;
 };
 
+#ifdef WLAN_POWER_DEBUG
 struct power_stats_priv {
 	struct power_stats_response power_stats;
 };
@@ -163,11 +203,9 @@ static void hdd_power_debugstats_cb(struct power_stats_response *response,
 	hdd_exit();
 }
 
-static ssize_t __show_device_power_stats(struct kobject *kobj,
-					 struct kobj_attribute *attr,
+static ssize_t __show_device_power_stats(struct hdd_context *hdd_ctx,
 					 char *buf)
 {
-	struct hdd_context *hdd_ctx = cds_get_context(QDF_MODULE_ID_HDD);
 	QDF_STATUS status;
 	struct power_stats_response *chip_power_stats;
 	ssize_t ret_cnt = 0;
@@ -182,10 +220,6 @@ static ssize_t __show_device_power_stats(struct kobject *kobj,
 	};
 
 	hdd_enter();
-
-	ret_cnt = wlan_hdd_validate_context(hdd_ctx);
-	if (ret_cnt)
-		return ret_cnt;
 
 	request = osif_request_alloc(&params);
 	if (!request) {
@@ -247,14 +281,26 @@ static ssize_t show_device_power_stats(struct kobject *kobj,
 				       struct kobj_attribute *attr,
 				       char *buf)
 {
-	ssize_t ret_val;
+	struct hdd_context *hdd_ctx = cds_get_context(QDF_MODULE_ID_HDD);
+	struct osif_psoc_sync *psoc_sync;
+	ssize_t length;
+	int errno;
 
-	cds_ssr_protect(__func__);
-	ret_val = __show_device_power_stats(kobj, attr, buf);
-	cds_ssr_unprotect(__func__);
+	errno = wlan_hdd_validate_context(hdd_ctx);
+	if (errno)
+		return errno;
 
-	return ret_val;
+	errno = osif_psoc_sync_op_start(hdd_ctx->parent_dev, &psoc_sync);
+	if (errno)
+		return errno;
+
+	length = __show_device_power_stats(hdd_ctx, buf);
+
+	osif_psoc_sync_op_stop(psoc_sync);
+
+	return length;
 }
+#endif
 
 #ifdef WLAN_FEATURE_BEACON_RECEPTION_STATS
 struct beacon_reception_stats_priv {
@@ -286,11 +332,10 @@ static void hdd_beacon_debugstats_cb(struct bcn_reception_stats_rsp
 	hdd_exit();
 }
 
-static ssize_t __show_beacon_reception_stats(struct device *dev, char *buf)
+static ssize_t __show_beacon_reception_stats(struct net_device *net_dev,
+					     char *buf)
 {
-	struct net_device *netdev =
-			qdf_container_of(dev, struct net_device, dev);
-	struct hdd_adapter *adapter = (netdev_priv(netdev));
+	struct hdd_adapter *adapter = netdev_priv(net_dev);
 	struct bcn_reception_stats_rsp *beacon_stats;
 	int ret_val, j;
 	void *cookie;
@@ -338,7 +383,7 @@ static ssize_t __show_beacon_reception_stats(struct device *dev, char *buf)
 	cookie = osif_request_cookie(request);
 
 	status = sme_beacon_debug_stats_req(hdd_ctx->mac_handle,
-					    adapter->session_id,
+					    adapter->vdev_id,
 					   hdd_beacon_debugstats_cb,
 					   cookie);
 	if (QDF_IS_STATUS_ERROR(status)) {
@@ -391,13 +436,19 @@ static ssize_t show_beacon_reception_stats(struct device *dev,
 					   struct device_attribute *attr,
 					   char *buf)
 {
-	ssize_t ret_val;
+	struct net_device *net_dev = container_of(dev, struct net_device, dev);
+	struct osif_vdev_sync *vdev_sync;
+	ssize_t err_size;
 
-	cds_ssr_protect(__func__);
-	ret_val = __show_beacon_reception_stats(dev, buf);
-	cds_ssr_unprotect(__func__);
+	err_size = osif_vdev_sync_op_start(net_dev, &vdev_sync);
+	if (err_size)
+		return err_size;
 
-	return ret_val;
+	err_size = __show_beacon_reception_stats(net_dev, buf);
+
+	osif_vdev_sync_op_stop(vdev_sync);
+
+	return err_size;
 }
 
 static DEVICE_ATTR(beacon_stats, 0444,
@@ -408,10 +459,12 @@ static struct kobj_attribute dr_ver_attribute =
 	__ATTR(driver_version, 0440, show_driver_version, NULL);
 static struct kobj_attribute fw_ver_attribute =
 	__ATTR(version, 0440, show_fw_version, NULL);
+#ifdef WLAN_POWER_DEBUG
 static struct kobj_attribute power_stats_attribute =
 	__ATTR(power_stats, 0444, show_device_power_stats, NULL);
+#endif
 
-void hdd_sysfs_create_version_interface(struct wlan_objmgr_psoc *psoc)
+static void hdd_sysfs_create_version_interface(struct wlan_objmgr_psoc *psoc)
 {
 	int error = 0;
 	uint32_t psoc_id;
@@ -428,7 +481,7 @@ void hdd_sysfs_create_version_interface(struct wlan_objmgr_psoc *psoc)
 		return;
 	}
 
-	fw_kobject = kobject_create_and_add("fw", driver_kobject);
+	fw_kobject = kobject_create_and_add("fw", wlan_kobject);
 	if (!fw_kobject) {
 		hdd_err("could not allocate fw kobject");
 		goto free_fw_kobj;
@@ -460,7 +513,7 @@ free_fw_kobj:
 	fw_kobject = NULL;
 }
 
-void hdd_sysfs_destroy_version_interface(void)
+static void hdd_sysfs_destroy_version_interface(void)
 {
 	if (psoc_kobject) {
 		kobject_put(psoc_kobject);
@@ -470,7 +523,8 @@ void hdd_sysfs_destroy_version_interface(void)
 	}
 }
 
-void hdd_sysfs_create_powerstats_interface(void)
+#ifdef WLAN_POWER_DEBUG
+static void hdd_sysfs_create_powerstats_interface(void)
 {
 	int error;
 
@@ -484,7 +538,7 @@ void hdd_sysfs_create_powerstats_interface(void)
 		hdd_err("could not create power_stats sysfs file");
 }
 
-void hdd_sysfs_destroy_powerstats_interface(void)
+static void hdd_sysfs_destroy_powerstats_interface(void)
 {
 	if (!driver_kobject) {
 		hdd_err("could not get driver kobject!");
@@ -492,8 +546,17 @@ void hdd_sysfs_destroy_powerstats_interface(void)
 	}
 	sysfs_remove_file(driver_kobject, &power_stats_attribute.attr);
 }
+#else
+static void hdd_sysfs_create_powerstats_interface(void)
+{
+}
 
-void hdd_sysfs_create_driver_root_obj(void)
+static void hdd_sysfs_destroy_powerstats_interface(void)
+{
+}
+#endif
+
+static void hdd_sysfs_create_driver_root_obj(void)
 {
 	driver_kobject = kobject_create_and_add(DRIVER_NAME, kernel_kobj);
 	if (!driver_kobject) {
@@ -509,7 +572,7 @@ void hdd_sysfs_create_driver_root_obj(void)
 	}
 }
 
-void hdd_sysfs_destroy_driver_root_obj(void)
+static void hdd_sysfs_destroy_driver_root_obj(void)
 {
 	if (wlan_kobject) {
 		kobject_put(wlan_kobject);
@@ -519,8 +582,6 @@ void hdd_sysfs_destroy_driver_root_obj(void)
 	if (driver_kobject) {
 		kobject_put(driver_kobject);
 		driver_kobject = NULL;
-		kobject_put(wlan_kobject);
-		wlan_kobject = NULL;
 	}
 }
 
@@ -537,19 +598,48 @@ static int hdd_sysfs_create_bcn_reception_interface(struct hdd_adapter
 	return error;
 }
 
-void hdd_sysfs_create_adapter_root_obj(struct hdd_adapter *adapter)
-{
-	hdd_sysfs_create_bcn_reception_interface(adapter);
-}
-
 static void hdd_sysfs_destroy_bcn_reception_interface(struct hdd_adapter
 						      *adapter)
 {
 	device_remove_file(&adapter->dev->dev, &dev_attr_beacon_stats);
 }
+#else
+static inline int hdd_sysfs_create_bcn_reception_interface(struct hdd_adapter
+						     *adapter)
+{
+	return 0;
+}
+
+static inline void hdd_sysfs_destroy_bcn_reception_interface(struct hdd_adapter
+						      *adapter)
+{}
+#endif
+
+void hdd_sysfs_create_adapter_root_obj(struct hdd_adapter *adapter)
+{
+	hdd_sysfs_create_bcn_reception_interface(adapter);
+	hdd_sysfs_dl_modes_create(adapter);
+}
 
 void hdd_sysfs_destroy_adapter_root_obj(struct hdd_adapter *adapter)
 {
+	hdd_sysfs_dl_modes_destroy(adapter);
 	hdd_sysfs_destroy_bcn_reception_interface(adapter);
 }
-#endif
+
+void hdd_create_sysfs_files(struct hdd_context *hdd_ctx)
+{
+	hdd_sysfs_create_driver_root_obj();
+	hdd_sysfs_create_version_interface(hdd_ctx->psoc);
+	hdd_sysfs_create_powerstats_interface();
+	hdd_sysfs_set_fw_mode_cfg_create(driver_kobject);
+}
+
+void hdd_destroy_sysfs_files(void)
+{
+	hdd_sysfs_set_fw_mode_cfg_destroy(driver_kobject);
+	hdd_sysfs_destroy_powerstats_interface();
+	hdd_sysfs_destroy_version_interface();
+	hdd_sysfs_destroy_driver_root_obj();
+}
+

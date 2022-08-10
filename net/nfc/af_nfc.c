@@ -48,7 +48,7 @@ static int nfc_sock_create(struct net *net, struct socket *sock, int proto,
 	return rc;
 }
 
-static struct net_proto_family nfc_sock_family_ops = {
+static const struct net_proto_family nfc_sock_family_ops = {
 	.owner  = THIS_MODULE,
 	.family = PF_NFC,
 	.create = nfc_sock_create,
@@ -71,6 +71,9 @@ int nfc_proto_register(const struct nfc_protocol *nfc_proto)
 	else
 		proto_tab[nfc_proto->id] = nfc_proto;
 	write_unlock(&proto_tab_lock);
+
+	if (rc)
+		proto_unregister(nfc_proto->proto);
 
 	return rc;
 }

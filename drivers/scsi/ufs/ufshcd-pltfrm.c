@@ -36,12 +36,11 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/of.h>
-#ifdef CONFIG_VENDOR_SMARTISAN
-#include <linux/of_gpio.h>
-#endif
 
 #include "ufshcd.h"
 #include "ufshcd-pltfrm.h"
+
+#define UFSHCD_DEFAULT_LANES_PER_DIRECTION		2
 
 static int ufshcd_parse_reset_info(struct ufs_hba *hba)
 {
@@ -71,11 +70,10 @@ static int ufshcd_parse_clock_info(struct ufs_hba *hba)
 	struct ufs_clk_info *clki;
 	int len = 0;
 	size_t sz = 0;
+	char *str = NULL;
 
 	if (!np)
 		goto out;
-
-	INIT_LIST_HEAD(&hba->clk_list_head);
 
 	cnt = of_property_count_strings(np, "clock-names");
 	if (!cnt || (cnt == -EINVAL)) {
@@ -105,8 +103,8 @@ static int ufshcd_parse_clock_info(struct ufs_hba *hba)
 		goto out;
 	}
 
-	clkfreq = devm_kzalloc(dev, sz * sizeof(*clkfreq),
-			GFP_KERNEL);
+	clkfreq = devm_kcalloc(dev, sz, sizeof(*clkfreq),
+			       GFP_KERNEL);
 	if (!clkfreq) {
 		ret = -ENOMEM;
 		goto out;
@@ -134,7 +132,15 @@ static int ufshcd_parse_clock_info(struct ufs_hba *hba)
 
 		clki->min_freq = clkfreq[i];
 		clki->max_freq = clkfreq[i+1];
-		clki->name = kstrdup(name, GFP_KERNEL);
+		str = devm_kzalloc(dev, strlen(name) + 1, GFP_KERNEL);
+		if (!str) {
+			ret = -ENOMEM;
+			goto out;
+		}
+
+		memcpy(str, name, strlen(name) + 1);
+		clki->name = str;
+
 		dev_dbg(dev, "%s: min %u max %u name %s\n", "freq-table-hz",
 				clki->min_freq, clki->max_freq, clki->name);
 		list_add_tail(&clki->list, &hba->clk_list_head);
@@ -147,10 +153,12 @@ out:
 static int ufshcd_populate_vreg(struct device *dev, const char *name,
 		struct ufs_vreg **out_vreg)
 {
-	int ret = 0;
+	int len, ret = 0;
 	char prop_name[MAX_PROP_SIZE];
 	struct ufs_vreg *vreg = NULL;
 	struct device_node *np = dev->of_node;
+	const __be32 *prop;
+	char *str = NULL;
 
 	if (!np) {
 		dev_err(dev, "%s: non DT initialization\n", __func__);
@@ -168,7 +176,11 @@ static int ufshcd_populate_vreg(struct device *dev, const char *name,
 	if (!vreg)
 		return -ENOMEM;
 
-	vreg->name = kstrdup(name, GFP_KERNEL);
+	str = devm_kzalloc(dev, strlen(name) + 1, GFP_KERNEL);
+	if (!str)
+		return -ENOMEM;
+	memcpy(str, name, strlen(name) + 1);
+	vreg->name = str;
 
 	/* if fixed regulator no need further initialization */
 	snprintf(prop_name, MAX_PROP_SIZE, "%s-fixed-regulator", name);
@@ -183,21 +195,57 @@ static int ufshcd_populate_vreg(struct device *dev, const char *name,
 		goto out;
 	}
 
-	vreg->min_uA = 0;
+	snprintf(prop_name, MAX_PROP_SIZE, "%s-min-microamp", name);
+	if (of_property_read_u32(np, prop_name, &vreg->min_uA))
+		vreg->min_uA = UFS_VREG_LPM_LOAD_UA;
+
 	if (!strcmp(name, "vcc")) {
 		if (of_property_read_bool(np, "vcc-supply-1p8")) {
 			vreg->min_uV = UFS_VREG_VCC_1P8_MIN_UV;
 			vreg->max_uV = UFS_VREG_VCC_1P8_MAX_UV;
 		} else {
-			vreg->min_uV = UFS_VREG_VCC_MIN_UV;
-			vreg->max_uV = UFS_VREG_VCC_MAX_UV;
+			prop = of_get_property(np, "vcc-voltage-level", &len);
+			if (!prop || (len != (2 * sizeof(__be32)))) {
+				dev_warn(dev, "%s vcc-voltage-level property.\n",
+					prop ? "invalid format" : "no");
+				vreg->min_uV = UFS_VREG_VCC_MIN_UV;
+				vreg->max_uV = UFS_VREG_VCC_MAX_UV;
+			} else {
+				vreg->min_uV = be32_to_cpup(&prop[0]);
+				vreg->max_uV = be32_to_cpup(&prop[1]);
+			}
+			if (of_property_read_bool(np, "vcc-low-voltage-sup"))
+				vreg->low_voltage_sup = true;
 		}
 	} else if (!strcmp(name, "vccq")) {
 		vreg->min_uV = UFS_VREG_VCCQ_MIN_UV;
 		vreg->max_uV = UFS_VREG_VCCQ_MAX_UV;
+		/**
+		 * Only if the SoC supports turning off VCCQ or VCCQ2 power
+		 * supply source during power collapse, set a flag to turn off
+		 * the specified power supply to reduce the system power
+		 * consumption during system suspend events. The tradeoffs are:
+		 *   - System resume time will increase due
+		 *     to UFS device full re-initialization time.
+		 *   - UFS device life may be affected due to multiple
+		 *     UFS power on/off events.
+		 * The benefits vs tradeoff should be considered carefully.
+		 */
+		if (of_property_read_bool(np, "vccq-pwr-collapse-sup"))
+			vreg->sys_suspend_pwr_off = true;
 	} else if (!strcmp(name, "vccq2")) {
-		vreg->min_uV = UFS_VREG_VCCQ2_MIN_UV;
-		vreg->max_uV = UFS_VREG_VCCQ2_MAX_UV;
+		prop = of_get_property(np, "vccq2-voltage-level", &len);
+		if (!prop || (len != (2 * sizeof(__be32)))) {
+			dev_warn(dev, "%s vccq2-voltage-level property.\n",
+				prop ? "invalid format" : "no");
+			vreg->min_uV = UFS_VREG_VCCQ2_MIN_UV;
+			vreg->max_uV = UFS_VREG_VCCQ2_MAX_UV;
+		} else {
+			vreg->min_uV = be32_to_cpup(&prop[0]);
+			vreg->max_uV = be32_to_cpup(&prop[1]);
+		}
+		if (of_property_read_bool(np, "vccq2-pwr-collapse-sup"))
+			vreg->sys_suspend_pwr_off = true;
 	}
 
 	goto out;
@@ -267,36 +315,76 @@ static int ufshcd_parse_pinctrl_info(struct ufs_hba *hba)
 	return ret;
 }
 
-#ifdef CONFIG_VENDOR_SMARTISAN
-static int ufshcd_parse_gpiopower_info(struct ufs_hba *hba)
+static void ufshcd_parse_gear_limits(struct ufs_hba *hba)
 {
 	struct device *dev = hba->dev;
 	struct device_node *np = dev->of_node;
-	int vccq2_power = 0;
-	int ret = 0;
+	int ret;
 
-	if (!np || !of_find_property(np, "vccq2_gpios", NULL)) {
-		return 0;
-	}
+	if (!np)
+		return;
 
-	vccq2_power = of_get_named_gpio(np, "vccq2_gpios", 0);
-	if (vccq2_power < 0 && vccq2_power != -ENOENT) {
-		ret = vccq2_power;
-		dev_err(dev, "get vccq2_gpio gpio failed\n");
-		return ret;
-	}
+	ret = of_property_read_u32(np, "limit-tx-hs-gear",
+		&hba->limit_tx_hs_gear);
+	if (ret)
+		hba->limit_tx_hs_gear = -1;
 
-	dev_dbg(dev, "get vccq2_power gpio %d\n", vccq2_power);
-	if (gpio_is_valid(vccq2_power)) {
-		ret = devm_gpio_request_one(dev, vccq2_power, GPIOF_OUT_INIT_HIGH,
-			    "UFS_VCCQ2_POWER_ON");
-		if (ret < 0)
-			dev_err(dev, "UFS_VCCQ2_POWER_ON gpio power on failed\n");
-	}
+	ret = of_property_read_u32(np, "limit-rx-hs-gear",
+		&hba->limit_rx_hs_gear);
+	if (ret)
+		hba->limit_rx_hs_gear = -1;
 
-	return ret;
+	ret = of_property_read_u32(np, "limit-tx-pwm-gear",
+		&hba->limit_tx_pwm_gear);
+	if (ret)
+		hba->limit_tx_pwm_gear = -1;
+
+	ret = of_property_read_u32(np, "limit-rx-pwm-gear",
+		&hba->limit_rx_pwm_gear);
+	if (ret)
+		hba->limit_rx_pwm_gear = -1;
 }
-#endif
+
+static void ufshcd_parse_cmd_timeout(struct ufs_hba *hba)
+{
+	struct device *dev = hba->dev;
+	struct device_node *np = dev->of_node;
+	int ret;
+
+	if (!np)
+		return;
+
+	ret = of_property_read_u32(np, "scsi-cmd-timeout",
+		&hba->scsi_cmd_timeout);
+	if (ret)
+		hba->scsi_cmd_timeout = 0;
+}
+
+static void ufshcd_parse_force_g4_flag(struct ufs_hba *hba)
+{
+	if (device_property_read_bool(hba->dev, "force-g4"))
+		hba->force_g4 = true;
+	else
+		hba->force_g4 = false;
+}
+
+static void ufshcd_parse_dev_ref_clk_freq(struct ufs_hba *hba)
+{
+	struct device *dev = hba->dev;
+	struct device_node *np = dev->of_node;
+	int ret;
+
+	if (!np)
+		return;
+
+	ret = of_property_read_u32(np, "dev-ref-clk-freq",
+				   &hba->dev_ref_clk_freq);
+	if (ret ||
+	    (hba->dev_ref_clk_freq < 0) ||
+	    (hba->dev_ref_clk_freq > REF_CLK_FREQ_52_MHZ))
+		/* default setting */
+		hba->dev_ref_clk_freq = REF_CLK_FREQ_26_MHZ;
+}
 
 #ifdef CONFIG_SMP
 /**
@@ -351,6 +439,21 @@ void ufshcd_pltfrm_shutdown(struct platform_device *pdev)
 }
 EXPORT_SYMBOL_GPL(ufshcd_pltfrm_shutdown);
 
+static void ufshcd_init_lanes_per_dir(struct ufs_hba *hba)
+{
+	struct device *dev = hba->dev;
+	int ret;
+
+	ret = of_property_read_u32(dev->of_node, "lanes-per-direction",
+		&hba->lanes_per_direction);
+	if (ret) {
+		dev_dbg(hba->dev,
+			"%s: failed to read lanes-per-direction, ret=%d\n",
+			__func__, ret);
+		hba->lanes_per_direction = UFSHCD_DEFAULT_LANES_PER_DIRECTION;
+	}
+}
+
 /**
  * ufshcd_pltfrm_init - probe routine of the driver
  * @pdev: pointer to Platform device handle
@@ -369,8 +472,8 @@ int ufshcd_pltfrm_init(struct platform_device *pdev,
 
 	mem_res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	mmio_base = devm_ioremap_resource(dev, mem_res);
-	if (IS_ERR(*(void **)&mmio_base)) {
-		err = PTR_ERR(*(void **)&mmio_base);
+	if (IS_ERR(mmio_base)) {
+		err = PTR_ERR(mmio_base);
 		goto out;
 	}
 
@@ -388,14 +491,6 @@ int ufshcd_pltfrm_init(struct platform_device *pdev,
 	}
 
 	hba->var = var;
-
-#ifdef CONFIG_VENDOR_SMARTISAN
-	err = ufshcd_parse_gpiopower_info(hba);
-	if (err) {
-		dev_err(&pdev->dev, "%s: gpio power parse failed %d\n",
-				__func__, err);
-	}
-#endif
 
 	err = ufshcd_parse_clock_info(hba);
 	if (err) {
@@ -424,23 +519,28 @@ int ufshcd_pltfrm_init(struct platform_device *pdev,
 		/* let's not fail the probe */
 	}
 
+	ufshcd_parse_dev_ref_clk_freq(hba);
 	ufshcd_parse_pm_levels(hba);
+	ufshcd_parse_gear_limits(hba);
+	ufshcd_parse_cmd_timeout(hba);
+	ufshcd_parse_force_g4_flag(hba);
 
 	if (!dev->dma_mask)
 		dev->dma_mask = &dev->coherent_dma_mask;
 
+	ufshcd_init_lanes_per_dir(hba);
+
 	err = ufshcd_init(hba, mmio_base, irq);
 	if (err) {
-		dev_err(dev, "Intialization failed\n");
+		dev_err(dev, "Initialization failed\n");
 		goto dealloc_host;
 	}
-
-	platform_set_drvdata(pdev, hba);
 
 	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
 
 	return 0;
+
 dealloc_host:
 	ufshcd_dealloc_host(hba);
 out:
@@ -450,6 +550,6 @@ EXPORT_SYMBOL_GPL(ufshcd_pltfrm_init);
 
 MODULE_AUTHOR("Santosh Yaragnavi <santosh.sy@samsung.com>");
 MODULE_AUTHOR("Vinayak Holikatti <h.vinayak@samsung.com>");
-MODULE_DESCRIPTION("UFS host controller Pltform bus based glue driver");
+MODULE_DESCRIPTION("UFS host controller Platform bus based glue driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(UFSHCD_DRIVER_VERSION);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2019 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -29,7 +29,7 @@
 #include "pld_common.h"
 #include "pld_internal.h"
 #include "pld_sdio.h"
-
+#include "osif_psoc_sync.h"
 
 #ifdef CONFIG_SDIO
 /* SDIO manufacturer ID and Codes */
@@ -85,7 +85,7 @@ static int pld_sdio_probe(struct sdio_func *sdio_func,
 	}
 
 	dev = &sdio_func->dev;
-	ret = pld_add_dev(pld_context, dev, PLD_BUS_TYPE_SDIO);
+	ret = pld_add_dev(pld_context, dev, NULL, PLD_BUS_TYPE_SDIO);
 	if (ret)
 		goto out;
 
@@ -109,14 +109,27 @@ static void pld_sdio_remove(struct sdio_func *sdio_func)
 {
 	struct pld_context *pld_context;
 	struct device *dev = &sdio_func->dev;
+	int errno;
+	struct osif_psoc_sync *psoc_sync;
+
+	errno = osif_psoc_sync_trans_start_wait(dev, &psoc_sync);
+	if (errno)
+		return;
+
+	osif_psoc_sync_unregister(dev);
+	osif_psoc_sync_wait_for_ops(psoc_sync);
 
 	pld_context = pld_get_global_context();
 
 	if (!pld_context)
-		return;
+		goto out;
 
 	pld_context->ops->remove(dev, PLD_BUS_TYPE_SDIO);
 	pld_del_dev(pld_context, dev);
+
+out:
+	osif_psoc_sync_trans_stop(psoc_sync);
+	osif_psoc_sync_destroy(psoc_sync);
 }
 
 #ifdef CONFIG_PLD_SDIO_CNSS
@@ -369,7 +382,7 @@ int pld_sdio_get_fw_files_for_target(struct pld_fw_files *pfw_files,
 	int ret = 0;
 	struct cnss_fw_files cnss_fw_files;
 
-	if (pfw_files == NULL)
+	if (!pfw_files)
 		return -ENODEV;
 
 	memset(pfw_files, 0, sizeof(*pfw_files));

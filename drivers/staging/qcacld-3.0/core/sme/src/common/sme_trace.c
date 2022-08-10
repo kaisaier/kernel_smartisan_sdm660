@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2020 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -22,12 +22,12 @@
  *
  * Author Kiran Kumar Reddy CH L V
  */
-#include "ani_global.h"          /* for tpAniSirGlobal */
+#include "ani_global.h"          /* for struct mac_context **/
 #include "mac_trace.h"
 #include "sme_trace.h"
 #include "sme_internal.h"
 #ifndef SME_TRACE_RECORD
-void sme_trace_init(tpAniSirGlobal pMac)
+void sme_trace_init(struct mac_context *mac)
 {
 
 }
@@ -179,28 +179,28 @@ static void sme_trace_dump(void *mac_ctx, tp_qdf_trace_record record,
 {
 	switch (record->code) {
 	case TRACE_CODE_SME_COMMAND:
-		sme_debug("%04d %012llu %s S%d %-14s %-30s(0x%x)",
+		sme_nofl_debug("%04d %012llu %s S%d %-14s %-30s(0x%x)",
 			rec_index, record->qtime, record->time, record->session,
 			"SME COMMAND:",
 			sme_trace_get_command_string(record->data),
 			record->data);
 		break;
 	case TRACE_CODE_SME_TX_WMA_MSG:
-		sme_debug("%04d %012llu %s S%d %-14s %-30s(0x%x)",
+		sme_nofl_debug("%04d %012llu %s S%d %-14s %-30s(0x%x)",
 			rec_index, record->qtime, record->time, record->session,
 			"TX WMA Msg:",
 			mac_trace_get_wma_msg_string((uint16_t)record->data),
 			record->data);
 		break;
 	case TRACE_CODE_SME_RX_WMA_MSG:
-		sme_debug("%04d %012llu %s S%d %-14s %-30s(0x%x)",
+		sme_nofl_debug("%04d %012llu %s S%d %-14s %-30s(0x%x)",
 			rec_index, record->qtime, record->time, record->session,
 			"RX WMA Msg:",
 			mac_trace_get_sme_msg_string((uint16_t)record->data),
 			record->data);
 		break;
 	default:
-		sme_debug("%04d %012llu %s S%d %-14s %-30s(0x%x)",
+		sme_nofl_debug("%04d %012llu %s S%d %-14s %-30s(0x%x)",
 			rec_index, record->qtime, record->time, record->session,
 			"RX HDD MSG:",
 			sme_trace_get_rx_msg_string(record->code),
@@ -209,7 +209,7 @@ static void sme_trace_dump(void *mac_ctx, tp_qdf_trace_record record,
 	}
 }
 
-void sme_trace_init(tpAniSirGlobal pMac)
+void sme_trace_init(struct mac_context *mac)
 {
 	qdf_trace_register(QDF_MODULE_ID_SME, &sme_trace_dump);
 }

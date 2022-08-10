@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2019, 2021 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -90,6 +90,7 @@ static QDF_STATUS target_if_wifi_pos_get_indirect_data(
 	void *paddr = NULL;
 	uint32_t addr_hi;
 	uint8_t ring_idx = 0, num_rings;
+	uint32_t allocated_len;
 
 	if (!indirect) {
 		target_if_debug("no indirect data. regular event received");
@@ -102,6 +103,16 @@ static QDF_STATUS target_if_wifi_pos_get_indirect_data(
 		target_if_err("incorrect pdev_id: %d", indirect->pdev_id);
 		return QDF_STATUS_E_INVAL;
 	}
+
+	allocated_len = priv_obj->dma_cap[ring_idx].min_buf_size +
+				(priv_obj->dma_cap[ring_idx].min_buf_align - 1);
+	if (indirect->len > allocated_len ||
+	    indirect->len > OEM_DATA_DMA_BUFF_SIZE) {
+		target_if_err("Invalid indirect len: %d, allocated_len:%d",
+			      indirect->len, allocated_len);
+		return QDF_STATUS_E_INVAL;
+	}
+
 	addr_hi = (uint64_t)WMI_OEM_DMA_DATA_ADDR_HI_GET(
 						indirect->addr_hi);
 	paddr = (void *)((uint64_t)addr_hi << 32 | indirect->addr_lo);
@@ -260,7 +271,7 @@ static int wifi_pos_oem_err_rpt_ev_handler(ol_scn_t scn, uint8_t *buf,
 
 /**
  * wifi_pos_oem_data_req() - start OEM data request to target
- * @wma_handle: wma handle
+ * @psoc: the pointer to psoc object manager
  * @req: start request params
  *
  * Return: QDF_STATUS
@@ -414,10 +425,9 @@ static QDF_STATUS target_if_wifi_pos_fill_ring(uint8_t ring_idx,
 	for (i = 0; i < priv->dma_cfg[ring_idx].num_ptr; i++) {
 		buf = qdf_mem_malloc(priv->dma_cap[ring_idx].min_buf_size +
 				priv->dma_cap[ring_idx].min_buf_align - 1);
-		if (!buf) {
-			target_if_err("malloc failed");
+		if (!buf)
 			return QDF_STATUS_E_NOMEM;
-		}
+
 		priv->dma_buf_pool[ring_idx][i].vaddr = buf;
 		buf_aligned = (void *)qdf_roundup((uint64_t)buf,
 				priv->dma_cap[ring_idx].min_buf_align);
@@ -463,10 +473,8 @@ static QDF_STATUS target_if_wifi_pos_init_ring(uint8_t ring_idx,
 	priv->dma_cfg[ring_idx].num_ptr = num_entries;
 	priv->dma_buf_pool[ring_idx] = qdf_mem_malloc(num_entries *
 					sizeof(struct wifi_pos_dma_buf_info));
-	if (!priv->dma_buf_pool[ring_idx]) {
-		target_if_err("malloc failed");
+	if (!priv->dma_buf_pool[ring_idx])
 		return QDF_STATUS_E_NOMEM;
-	}
 
 	ring_alloc_size = (num_entries * entry_size) + RING_BASE_ALIGN - 1;
 	priv->dma_cfg[ring_idx].ring_alloc_size = ring_alloc_size;
@@ -529,17 +537,13 @@ static QDF_STATUS target_if_wifi_pos_init_srngs(
 	/* allocate memory for num_rings pointers */
 	priv->dma_cfg = qdf_mem_malloc(priv->num_rings *
 				sizeof(struct wifi_pos_dma_rings_cap));
-	if (!priv->dma_cfg) {
-		target_if_err("malloc failed");
+	if (!priv->dma_cfg)
 		return QDF_STATUS_E_NOMEM;
-	}
 
 	priv->dma_buf_pool = qdf_mem_malloc(priv->num_rings *
 				sizeof(struct wifi_pos_dma_buf_info *));
-	if (!priv->dma_buf_pool) {
-		target_if_err("malloc failed");
+	if (!priv->dma_buf_pool)
 		return QDF_STATUS_E_NOMEM;
-	}
 
 	for (i = 0; i < priv->num_rings; i++) {
 		status = target_if_wifi_pos_init_ring(i, priv);
@@ -635,10 +639,8 @@ QDF_STATUS target_if_wifi_pos_init_cir_cfr_rings(struct wlan_objmgr_psoc *psoc,
 	priv->num_rings = num_mac;
 	priv->dma_cap = qdf_mem_malloc(priv->num_rings *
 					sizeof(struct wifi_pos_dma_rings_cap));
-	if (!priv->dma_cap) {
-		target_if_err("unable to get wifi_pos psoc obj");
+	if (!priv->dma_cap)
 		return QDF_STATUS_E_NOMEM;
-	}
 
 	for (i = 0; i < num_mac; i++) {
 		priv->dma_cap[i].pdev_id = dma_cap[i].pdev_id;
